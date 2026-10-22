@@ -1,10 +1,14 @@
-"""Basic tests for the cwaves public API (skeleton).
+"""Unit tests for the cwaves public API.
 
-The full test suite (>= 80 % coverage) is added in roadmap task 8.
+Adapted from ``xsar_slc/xsarslc/tests/test_methods_related_to_xspectra.py`` and
+extended to cover the corrected kernel implementation (missing ``sqrt()`` in the
+Gegenbauer coefficient + exact ``eta`` Jacobian, see
+``repository_specifications.md`` section 5).
 """
 
 import cwaves
 import numpy as np
+import pytest
 import xarray as xr
 from cwaves import (
     compute_cwave_parameters,
@@ -15,6 +19,10 @@ from cwaves import (
     load_config,
     symmetrize_xspectrum,
 )
+
+# =============================================================================
+# Public API / basic values
+# =============================================================================
 
 
 def test_public_api():
@@ -28,65 +36,133 @@ def test_public_api():
     assert cwaves.__version__
 
 
+def test_gegenbauer_polynoms_values():
+    # gegenbauer_polynoms expects a DataArray (as used in compute_kernel)
+    x = xr.DataArray(np.linspace(-1, 1, 11), dims=("n",))
+    # C_0 = 1, C_1 = 2*lambda*x, C_2 = 2*lambda*(lambda+1)*x^2 - lambda
+    # with lambda = 1.5 : C_1 = 3x, C_2 = 7.5 x^2 - 1.5
+    assert np.allclose(gegenbauer_polynoms(x, 0), 1.0)
+    assert np.allclose(gegenbauer_polynoms(x, 1), 3.0 * x)
+    assert np.allclose(gegenbauer_polynoms(x, 2), 7.5 * x**2 - 1.5)
+    # higher order (recursion) : returns a DataArray of the right shape
+    c5 = gegenbauer_polynoms(x, 5)
+    assert c5.dims == x.dims
+    assert np.all(np.isfinite(c5.values))
+
+
+def test_harmonic_functions_values():
+    x = np.linspace(-np.pi / 2, np.pi / 2, 11)
+    # f_1 = 1/sqrt(pi), f_2 = sqrt(2/pi) sin(2x), f_3 = sqrt(2/pi) cos(2x)
+    assert np.allclose(harmonic_functions(x, 1), np.sqrt(1.0 / np.pi))
+    assert np.allclose(harmonic_functions(x, 2), np.sqrt(2.0 / np.pi) * np.sin(2.0 * x))
+    assert np.allclose(harmonic_functions(x, 3), np.sqrt(2.0 / np.pi) * np.cos(2.0 * x))
+
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+
 def test_default_config():
     cfg = get_default_config()
-    # the cwave block holds the cwave_* parameters
     assert "cwave" in cfg
     cwave = cfg["cwave"]
     assert cwave["cwave_wlmax"] == 600
     assert cwave["cwave_wlmin"] == 25
     assert cwave["cwave_Nk"] == 4
     assert cwave["cwave_Nphi"] == 5
-    # load_config() with no argument returns the same packaged default
     assert load_config() == cfg
 
 
-def test_config_as_kwargs(mock_xspectra_da):
+def test_load_config_not_mapping(tmp_path):
+    # a YAML file that does not contain a mapping must be rejected
+    bad = tmp_path / "bad.yml"
+    bad.write_text("- just\n- a\n- list\n")
+    with pytest.raises(ValueError):
+        load_config(bad)
+
+
+def test_config_as_kwargs(mock_xspectra_da_small):
     # the cwave block can be passed directly as kwargs to the computation
     cwave = get_default_config()["cwave"]
-    cp = compute_cwave_parameters(mock_xspectra_da, **cwave)
+    cp = compute_cwave_parameters(mock_xspectra_da_small, **cwave)
     assert cp.sizes["k_gp"] == cwave["cwave_Nk"]
     assert cp.sizes["phi_hf"] == cwave["cwave_Nphi"]
 
 
-def test_gegenbauer_polynoms_values():
-    x = np.linspace(-1, 1, 11)
-    # C_0 = 1, C_1 = 2*lambda*x
-    assert np.allclose(gegenbauer_polynoms(x, 0), 1.0)
-    assert np.allclose(gegenbauer_polynoms(x, 1), 3.0 * x)
+# =============================================================================
+# symmetrize_xspectrum
+# =============================================================================
 
 
-def test_harmonic_functions_values():
-    x = np.linspace(-np.pi / 2, np.pi / 2, 11)
-    # f_1 = 1/sqrt(pi)
-    assert np.allclose(harmonic_functions(x, 1), np.sqrt(1.0 / np.pi))
-    # f_2 = sqrt(2/pi) sin(2x)
-    assert np.allclose(harmonic_functions(x, 2), np.sqrt(2.0 / np.pi) * np.sin(2.0 * x))
-
-
-def test_symmetrize_xspectrum_shape(mock_xspectra_da):
+def test_symmetrize_xspectrum(mock_xspectra_da):
     xs = symmetrize_xspectrum(mock_xspectra_da)
-    n = mock_xspectra_da.sizes["freq_sample"]
+    assert isinstance(xs, xr.DataArray)
     # symmetrization mirrors the range (freq_sample) dimension:
-    # the zero wavenumber is kept once -> 2n - 2 points
-    assert xs.sizes["freq_sample"] == 2 * n - 2
+    # 2n - 2 points (the zero wavenumber is kept once, as in xsar_slc: 506 -> 1010)
+    assert xs.sizes["freq_sample"] == 2 * mock_xspectra_da.sizes["freq_sample"] - 2
+    assert xs.dims == mock_xspectra_da.dims
+
+
+def test_symmetrize_xspectrum_real_warning(mock_xspectra_da):
+    # a real (non complex) spectrum should only raise a warning, not fail
+    real_da = mock_xspectra_da.real
+    with pytest.warns(UserWarning):
+        symmetrize_xspectrum(real_da)
+
+
+def test_symmetrize_xspectrum_bad_dims(mock_xspectra_da):
+    # dim_range / dim_azimuth must be dimensions (not coordinates)
+    with pytest.raises(ValueError):
+        symmetrize_xspectrum(mock_xspectra_da, dim_range="k_rg")
+
+
+# =============================================================================
+# compute_cwave_parameters
+# =============================================================================
 
 
 def test_compute_cwave_parameters(mock_xspectra_da):
-    cp = compute_cwave_parameters(
-        mock_xspectra_da, cwave_wlmax=600, cwave_wlmin=25, cwave_Nk=4, cwave_Nphi=5
-    )
+    cp = compute_cwave_parameters(mock_xspectra_da)
+    assert isinstance(cp, xr.DataArray)
     assert cp.name == "cwave_params"
+    for key in ["k_gp", "tile_line", "tile_sample", "phi_hf", "burst", "pol"]:
+        assert key in cp.dims
     assert cp.sizes["k_gp"] == 4
     assert cp.sizes["phi_hf"] == 5
-    assert np.isfinite(cp.values).any()
+    assert np.all(np.isfinite(cp.values))
+    if "k_gp" in cp.coords:
+        assert np.all(cp["k_gp"].values >= 0)
 
 
-def test_compute_kernel_orthonormality():
-    """The corrected kernels must be (mutually) orthogonal on the domain A.
+def test_compute_cwave_parameters_with_kwargs(mock_xspectra_da_small):
+    # custom cwave_* parameters (and unrelated kwargs) are honoured
+    kwargs = {
+        "cwave_wlmax": 701,
+        "cwave_wlmin": 23,
+        "cwave_Nk": 5,
+        "cwave_Nphi": 7,
+        "lambda_range_max": [26.0, 51.0, 76.0],
+        "excluded_variables": ["var_xspectra_0tau"],
+        "default_az_cutoff_definition": "ipf",
+        "bright_target_nstddev": 11,
+    }
+    cp = compute_cwave_parameters(mock_xspectra_da_small, **kwargs)
+    assert cp.sizes["k_gp"] == kwargs["cwave_Nk"]
+    assert cp.sizes["phi_hf"] == kwargs["cwave_Nphi"]
+    assert np.all(np.isfinite(cp.values))
 
-    This is the key property fixed by the missing-sqrt / eta correction
-    (see repository_specifications.md section 5).
+
+# =============================================================================
+# compute_kernel / orthonormality of the corrected kernels
+# =============================================================================
+
+
+def _kernel_gram_matrix(npts=200):
+    """Return the orthonormality (Gram) matrix of the kernels on the domain A.
+
+    Built with the paper parameters (g=2, kmin=2pi/624m, kmax=2pi/60m), so it
+    is independent of the xsar_slc default wavelengths.
     """
     g = 2.0
     kmax = 2 * np.pi / 60
@@ -94,31 +170,89 @@ def test_compute_kernel_orthonormality():
     a1 = (g**2 - g**4) / (g**2 * kmin**2 - kmax**2)
     a2 = (kmax**2 - g**4 * kmin**2) / (kmax**2 - g**2 * kmin**2)
 
-    npts = 200
     kx = np.linspace(-0.2, 0.2, npts)
     ky = np.linspace(-0.2, 0.2, npts)
     kx_grid, ky_grid = np.meshgrid(kx, ky, indexing="ij")
     krg = xr.DataArray(ky_grid, dims=("j", "i"))
     kaz = xr.DataArray(kx_grid, dims=("j", "i"))
 
-    kernel = compute_kernel(krg, kaz, kmin, kmax, cwave_Nk=3, cwave_Nphi=3)
-    # cwave_kernel dims: (k_gp, <grid dims...>, phi_hf)
+    n_k, n_phi = 3, 3
+    kernel = compute_kernel(krg, kaz, kmin, kmax, cwave_Nk=n_k, cwave_Nphi=n_phi)
     da = kernel["cwave_kernel"]
     grid_dims = [d for d in da.dims if d not in ("k_gp", "phi_hf")]
-    h = da.transpose("k_gp", *grid_dims, "phi_hf").values  # (3, j, i, 3)
-    h = h.reshape(3, -1, 3)  # (k_gp, grid, phi_hf)
+    h = da.transpose("k_gp", *grid_dims, "phi_hf").values
+    h = h.reshape(n_k, -1, n_phi)
 
-    # mask to the domain A (reshape to (1, grid, 1) to broadcast over h)
     u = a1 * kx_grid**4 + a2 * kx_grid**2 + ky_grid**2
     mask = (u >= kmin**2) & (u <= kmax**2)
-    ngrid = mask.size
-    h = np.where(mask.reshape(1, ngrid, 1), h, 0.0)
+    h = np.where(mask.reshape(1, mask.size, 1), h, 0.0)
 
     dkx = kx[1] - kx[0]
     dky = ky[1] - ky[0]
-    flat = h.transpose(0, 2, 1).reshape(9, -1)  # (k_gp*phi_hf, grid)
-    gram = flat @ flat.T * (dkx * dky)
+    flat = h.transpose(0, 2, 1).reshape(n_k * n_phi, -1)
+    return flat @ flat.T * (dkx * dky)
+
+
+def test_compute_kernel_orthonormality():
+    """The corrected kernels must be mutually orthogonal on the domain A.
+
+    This is the key property restored by the missing-sqrt / eta correction
+    (see repository_specifications.md section 5): the original xsar_slc
+    ``eta`` gave a ~24-39 % off-diagonal contamination.
+    """
+    gram = _kernel_gram_matrix()
     diag = np.diag(gram)
     offdiag = np.abs(gram - np.diag(diag)).max()
-    # orthogonality : off-diagonal must be small compared to the norm
     assert offdiag < 0.05 * np.abs(diag).mean()
+
+
+def test_compute_kernel_returns_components():
+    kmax = 2 * np.pi / 60
+    kmin = 2 * np.pi / 624
+    kx = np.linspace(-0.2, 0.2, 40)
+    ky = np.linspace(-0.2, 0.2, 40)
+    kx_grid, ky_grid = np.meshgrid(kx, ky, indexing="ij")
+    kernel = compute_kernel(
+        xr.DataArray(ky_grid, dims=("j", "i")),
+        xr.DataArray(kx_grid, dims=("j", "i")),
+        kmin,
+        kmax,
+        cwave_Nk=2,
+        cwave_Nphi=2,
+    )
+    for var in ["cwave_kernel", "Gegenbauer_polynoms", "Harmonic_functions", "eta"]:
+        assert var in kernel
+
+
+def test_compute_kernel_drops_pol():
+    """If the wavenumber grids carry a ``pol`` coordinate, the kernel output
+    must drop it (defensive branch of compute_kernel)."""
+    kx = np.linspace(-0.2, 0.2, 20)
+    ky = np.linspace(-0.2, 0.2, 20)
+    kx_grid, ky_grid = np.meshgrid(kx, ky, indexing="ij")
+    krg = xr.DataArray(ky_grid, dims=("j", "i"), coords={"pol": ("i", ["VV"] * 20)})
+    kaz = xr.DataArray(kx_grid, dims=("j", "i"), coords={"pol": ("i", ["VV"] * 20)})
+    kernel = compute_kernel(
+        krg, kaz, 2 * np.pi / 624, 2 * np.pi / 60, cwave_Nk=2, cwave_Nphi=2
+    )
+    # "pol" must not remain as a variable of the merged kernel dataset
+    assert "pol" not in kernel
+    assert "cwave_kernel" in kernel
+
+
+def test_compute_kernel_save(tmp_path, monkeypatch):
+    # save_cwave_kernel=True writes cwaves_kernel.nc in the working directory
+    monkeypatch.chdir(tmp_path)
+    kx = np.linspace(-0.2, 0.2, 20)
+    ky = np.linspace(-0.2, 0.2, 20)
+    kx_grid, ky_grid = np.meshgrid(kx, ky, indexing="ij")
+    compute_kernel(
+        xr.DataArray(ky_grid, dims=("j", "i")),
+        xr.DataArray(kx_grid, dims=("j", "i")),
+        2 * np.pi / 624,
+        2 * np.pi / 60,
+        cwave_Nk=2,
+        cwave_Nphi=2,
+        save_cwave_kernel=True,
+    )
+    assert (tmp_path / "cwaves_kernel.nc").exists()
