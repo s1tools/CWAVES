@@ -34,8 +34,9 @@ pytest -c pyproject.toml --cov=cwaves --cov-report=term-missing tests/  # + cove
   `gegenbauer_polynoms`, `harmonic_functions`.
 - `cwaves/symmetrize_xspectra.py` — `symmetrize_xspectrum`.
 - `cwaves/client.py` — CLI client (`cwaves-osw`) computing CWAVE on a
-  symmetrized cross-spectrum from an ESA OCN WV Sentinel-1 measurement file
-  (roadmap task 9).
+  symmetrized cross-spectrum (roadmap task 9). Two inputs : the SARWave L1B XSP
+  cross-spectrum product (`--input-nc-l1b`, primary) and the ESA OCN WV
+  Sentinel-1 measurement file (`--input-nc-osw`, polar `oswPolSpec` -> cartesian).
 - `cwaves/scripts/` — end-to-end scripts on IW subswaths (roadmap task 10).
 - `cwaves/default_config.yml` — default `cwave_*` configuration (roadmap task 6).
 - `tests/` — unit tests (synthetic `xarray` data + the `assets/` fixture, no network).

@@ -5,11 +5,39 @@ The mocks reproduce the structure of the ``xsar_slc`` cross-spectra (see
 ``cwaves`` functions can be exercised without network access or large files.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import xarray as xr
 
 DIMS = ("burst", "tile_sample", "tile_line", "pol", "freq_line", "freq_sample")
+
+#: path of the ESA OCN WV Sentinel-1 measurement fixture shipped in assets/
+ASSETS_NC = (
+    Path(__file__).resolve().parent.parent
+    / "assets"
+    / "s1d-wv1-ocn-vv-20260802t194456-20260802t194459-003951-00729e-013.nc"
+)
+
+#: path of the reduced SARWave L1B XSP cross-spectrum fixture shipped in assets/
+ASSETS_L1B_NC = (
+    Path(__file__).resolve().parent.parent
+    / "assets"
+    / "s1a_wv1_xsp_20250501t060101_058996_075117_dd24_a24.nc"
+)
+
+
+@pytest.fixture
+def osw_measurement_nc():
+    """Path of the ESA OCN WV Sentinel-1 measurement NetCDF fixture."""
+    return ASSETS_NC
+
+
+@pytest.fixture
+def l1b_xsp_nc():
+    """Path of the reduced SARWave L1B XSP cross-spectrum NetCDF fixture."""
+    return ASSETS_L1B_NC
 
 
 def _make_mock(shape):

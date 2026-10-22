@@ -66,6 +66,9 @@ repository = "https://github.com/s1tools/CWAVES"
 homepage = "https://github.com/s1tools/CWAVES"
 documentation = "https://cwaves.readthedocs.io"
 
+[project.scripts]
+cwaves-osw = "cwaves.client:entrypoint"
+
 [tool.hatch.metadata]
 allow-direct-references = true
 
