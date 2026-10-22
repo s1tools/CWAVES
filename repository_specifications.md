@@ -33,15 +33,16 @@
 
 ## 2. Reference document for the CWAVE computation
 
-The scientific reference for the CWAVE (Cross-Wave Spectral Analysis) computation is :
+The scientific reference for the CWAVE computation is :
 
-> **G. E. Schulz, J. D. Eden, A. M. Thorsen, "An analysis of the ocean surface wave spectrum using SAR interferometry", J. Geophys. Res. Oceans, 112, C05015, 2007.**
+> **J. Schulz-Stellenfleth, T. König, and S. Lehner, "An empirical approach for the retrieval of integral ocean wave parameters from synthetic aperture radar data", J. Geophys. Res., 112, C03019, 2007.**
 > DOI : [10.1029/2006JC003970](https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2006JC003970)
 
-This paper defines :
+The CWAVE method is an empirical approach to retrieve integral ocean wave parameters from SAR data without the intermediate step of retrieving the 2D ocean wave spectrum. This paper defines (see in particular Appendix B, equations B1 to B13) :
 
-- the decomposition of the cross-spectrum into orthogonal kernels, product of Gegenbauer polynomials (in `k`) and harmonic functions (in `phi`), weighted by an `eta` factor
-- the logarithmic mapping of the radial wavenumber `k` into the `[-1, 1]` interval for the evaluation of the Gegenbauer polynomials
+- an elliptic wavenumber domain `A` shaped by the bunching parameter `g` (default `g = 2`), which takes into account the velocity bunching effect leading to a low-pass filtering of the spectrum in the azimuth direction
+- the mapping of `A` onto the rectangle `B = [-1, 1] x [-pi/2, pi/2]`, with a logarithmic mapping of the wavenumber magnitude (equation B1)
+- orthonormal functions built as tensor products of Gegenbauer polynomials `C_n^(3/2)` (in the wavenumber direction, equations B7 to B10) and pi-periodic harmonic functions (in the angle direction, equation B11), weighted by a Jacobian-like factor `h` (equation B13)
 - the CWAVE parameters obtained by integrating the normalized cross-spectrum over each kernel
 
 Any modification of the computation equations must be justified against this paper and documented in the Sphinx documentation.
@@ -81,5 +82,6 @@ The signatures of the public methods of the lib **must remain identical** to the
 ## 4. Conventions
 
 - **Axis convention** : `kx = range` (`k_rg`, dimension `freq_sample`), `ky = azimuth` (`k_az`, dimension `freq_line`). The major axis of the kernel ellipses is in the range direction. This convention is identical to the one of the last commits of `xsar_slc`.
+- Note : in the paper (equation B1), the 4th-order bunching term is in the azimuth direction ; in the code it is applied to `k_az`.
 - The units of the wavelengths (`cwave_wlmax`, `cwave_wlmin`) are in meters ; the wavenumbers `kmin`/`kmax` are in rad/m (`k = 2*pi/wavelength`).
 - All code comments, docstrings and variable names in the lib are written in **English**.
