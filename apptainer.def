@@ -1,0 +1,84 @@
+# Apptainer definition file for cwaves
+# Build :
+#   apptainer build cwaves.sif apptainer.def
+# Run:
+#   apptainer run cwaves.sif
+# Shell:
+#   apptainer shell cwaves.sif
+
+Bootstrap: docker
+From: python:3.12-slim-bookworm
+
+%arguments
+    INSTALL_DEV=false
+
+%environment
+    export LANG=C.UTF-8
+    export LC_ALL=C.UTF-8
+    export PYTHONDONTWRITEBYTECODE=1
+    export PYTHONUNBUFFERED=1
+    export PATH=/workspace/.local/bin:$PATH
+
+%setup
+    # Runs on the HOST before the container is built.
+    # Nothing needed here.
+
+
+%files
+    .                      /workspace
+
+%post
+    set -e
+
+    # ---- system deps ----
+    apt-get update
+    apt-get install -y --no-install-recommends git
+    rm -rf /var/lib/apt/lists/*
+
+    pip install --no-cache-dir --upgrade pip
+
+    # ---- install project + dependencies ----
+    cd /workspace
+
+    if [ "{{ INSTALL_DEV }}" = "true" ]; then
+        pip install --no-cache-dir ".[dev]"
+    else
+        pip install --no-cache-dir .
+    fi
+
+    # ---- sanity check ----
+    python -c "import cwaves; print('cwaves', cwaves.__version__)"
+
+%runscript
+    # Default command : run the CWAVE client on a Sentinel-1 OCN WV measurement file
+    exec python -m cwaves.client "$@"
+
+%test
+    # Quick smoke test run after build (optional, remove if slow)
+    python -c "import cwaves; print('import OK')"
+
+%labels
+    Maintainer   antoine.grouazel@ifremer.fr
+    Version      2026.10.22
+    Description  CWAVE parameters from SAR ocean cross-spectra (Schulz-Stellenfleth et al. 2007)
+
+%help
+    Apptainer image for the cwaves Python library.
+
+    Build (production):
+        apptainer build \
+            cwaves.sif apptainer.def
+
+    Build (dev, includes test dependencies):
+        apptainer build \
+            --build-arg INSTALL_DEV=true \
+            cwaves_dev.sif apptainer.def
+
+    Run default entrypoint (CWAVE client):
+        apptainer run cwaves.sif [args...]
+
+    Run the client module directly:
+        apptainer exec cwaves.sif python -m cwaves.client [args...]
+
+    Interactive shell:
+        apptainer shell cwaves.sif
