@@ -8,6 +8,8 @@ Public API
 - :func:`cwaves.symmetrize_xspectrum` : symmetrize a one-sided cross-spectrum.
 - :func:`cwaves.gegenbauer_polynoms` : Gegenbauer polynomials ``C_n^(3/2)``.
 - :func:`cwaves.harmonic_functions` : pi-periodic harmonic functions.
+- :func:`cwaves.get_default_config` / :func:`cwaves.load_config` : load the
+  ``cwave_*`` configuration (the ``cwave`` block can be passed as kwargs).
 
 Reference
 ---------
@@ -27,6 +29,7 @@ from cwaves.compute_cwaves import (
     gegenbauer_polynoms,
     harmonic_functions,
 )
+from cwaves.config import get_default_config, load_config
 from cwaves.symmetrize_xspectra import symmetrize_xspectrum
 
 __all__ = [
@@ -35,5 +38,7 @@ __all__ = [
     "gegenbauer_polynoms",
     "harmonic_functions",
     "symmetrize_xspectrum",
+    "get_default_config",
+    "load_config",
     "__version__",
 ]

@@ -10,7 +10,9 @@ from cwaves import (
     compute_cwave_parameters,
     compute_kernel,
     gegenbauer_polynoms,
+    get_default_config,
     harmonic_functions,
+    load_config,
     symmetrize_xspectrum,
 )
 
@@ -21,7 +23,30 @@ def test_public_api():
     assert callable(gegenbauer_polynoms)
     assert callable(harmonic_functions)
     assert callable(symmetrize_xspectrum)
+    assert callable(get_default_config)
+    assert callable(load_config)
     assert cwaves.__version__
+
+
+def test_default_config():
+    cfg = get_default_config()
+    # the cwave block holds the cwave_* parameters
+    assert "cwave" in cfg
+    cwave = cfg["cwave"]
+    assert cwave["cwave_wlmax"] == 600
+    assert cwave["cwave_wlmin"] == 25
+    assert cwave["cwave_Nk"] == 4
+    assert cwave["cwave_Nphi"] == 5
+    # load_config() with no argument returns the same packaged default
+    assert load_config() == cfg
+
+
+def test_config_as_kwargs(mock_xspectra_da):
+    # the cwave block can be passed directly as kwargs to the computation
+    cwave = get_default_config()["cwave"]
+    cp = compute_cwave_parameters(mock_xspectra_da, **cwave)
+    assert cp.sizes["k_gp"] == cwave["cwave_Nk"]
+    assert cp.sizes["phi_hf"] == cwave["cwave_Nphi"]
 
 
 def test_gegenbauer_polynoms_values():
