@@ -75,6 +75,7 @@ documentation = "https://cwaves.readthedocs.io"
 
 [project.scripts]
 cwaves-osw = "cwaves.client:entrypoint"
+cwaves-kernels = "cwaves.scripts.plot_kernels:entrypoint"
 
 [tool.hatch.metadata]
 allow-direct-references = true

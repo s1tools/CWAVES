@@ -41,7 +41,10 @@ pytest -c pyproject.toml --cov=cwaves --cov-report=term-missing tests/  # + cove
   iw3) of a Sentinel-1 IW product and render a georeferenced map. Handles both the
   OCN IW measurement (`s1?-iw?-osw-*.nc`, sinh grid → resampled to regular, `m/m`
   → rad/m) and the SARWAVE L1B XSP (`l1b-s1?-iw?-xsp-*.nc`, uniform rad/m). Map
-  rendering needs the `scripts` extra (cartopy) (roadmap task 10).
+  rendering needs the `scripts`   extra (cartopy) (roadmap task 10).
+- `cwaves/scripts/plot_kernels.py` — render the CWAVE kernel basis in the
+  (kx, ky) wavenumber domain (elliptic domain A, masked outside), as a grid of
+  k_gp x phi_hf panels (console script `cwaves-kernels`) (roadmap task 12).
 - `cwaves/default_config.yml` — default `cwave_*` configuration (roadmap task 6).
 - `tests/` — unit tests (synthetic `xarray` data + the `assets/` fixture, no network).
 - `assets/` — an ESA OCN WV Sentinel-1 measurement NetCDF fixture.

@@ -1,0 +1,201 @@
+"""Tests for the CWAVE kernel plotting script (``cwaves.scripts.plot_kernels``).
+
+Builds the kernels on a synthetic two-sided meshgrid (no fixture needed) and
+checks the grid/mask/select helpers, the figure rendering and the CLI.
+"""
+
+import numpy as np
+import pytest
+from cwaves.scripts.plot_kernels import (
+    build_kernel_grid,
+    domain_mask,
+    entrypoint,
+    plot_kernels,
+    select_kernels,
+)
+
+WLMAX = 600.0
+WLMIN = 25.0
+
+
+def _grid(n=40):
+    krg, kaz, kmin, kmax, k_rg_1d, k_az_1d = build_kernel_grid(WLMAX, WLMIN, n)
+    return krg, kaz, kmin, kmax, k_rg_1d, k_az_1d
+
+
+def _kernel(n_k=4, n_phi=5, n=40):
+    krg, kaz, kmin, kmax, k_rg_1d, k_az_1d = _grid(n)
+    from cwaves.compute_cwaves import compute_kernel
+
+    kernel = compute_kernel(
+        krg=krg, kaz=kaz, kmin=kmin, kmax=kmax, cwave_Nk=n_k, cwave_Nphi=n_phi
+    )
+    return kernel, k_rg_1d, k_az_1d
+
+
+# ---------------------------------------------------------------------------
+# build_kernel_grid
+# ---------------------------------------------------------------------------
+
+
+def test_build_kernel_grid_shape_and_symmetry():
+    krg, kaz, kmin, kmax, k_rg_1d, k_az_1d = _grid()
+    assert krg.dims == ("i", "j")
+    assert kaz.dims == ("i", "j")
+    # the grid must be two-sided (symmetric) in both range and azimuth
+    assert k_rg_1d[0] < 0 < k_rg_1d[-1]
+    assert k_az_1d[0] < 0 < k_az_1d[-1]
+    assert np.isclose(k_rg_1d[0], -k_rg_1d[-1])
+    # the grid must extend beyond kmax so the ellipse is not clipped
+    assert k_rg_1d.max() > kmax
+    # kmin / kmax derive from the wavelengths
+    assert np.isclose(kmin, 2 * np.pi / WLMAX)
+    assert np.isclose(kmax, 2 * np.pi / WLMIN)
+    # the range axis must be attached as a coordinate (for the plotting labels)
+    assert "k_rg" in krg.coords
+
+
+# ---------------------------------------------------------------------------
+# domain_mask
+# ---------------------------------------------------------------------------
+
+
+def test_domain_mask_elliptic_shape():
+    krg, kaz, kmin, kmax, k_rg_1d, k_az_1d = _grid()
+    mask = domain_mask(krg, kaz, kmin, kmax)
+    # the origin (0, 0) is outside the domain A (bounded by kmin in range)
+    i_mid = krg.sizes["i"] // 2
+    j_mid = kaz.sizes["j"] // 2
+    assert not bool(mask.values[i_mid, j_mid])
+    # the range mid (k_az=0, |k_rg| ~ kmax/2) is inside the domain
+    i_range = int(np.argmin(np.abs(k_rg_1d - kmax / 2.0)))
+    assert bool(mask.values[i_range, j_mid])
+    # the far corner (largest |k_rg| and |k_az|) is outside
+    assert not bool(mask.values[0, 0])
+    # the domain must be elongated along range (k_rg)
+    extent_i = int(mask.any(dim="j").values.sum())
+    extent_j = int(mask.any(dim="i").values.sum())
+    assert extent_i > extent_j
+
+
+# ---------------------------------------------------------------------------
+# select_kernels
+# ---------------------------------------------------------------------------
+
+
+def test_select_kernels_all():
+    pairs, nrows, ncols = select_kernels(4, 5, None, None)
+    assert len(pairs) == 20
+    assert (nrows, ncols) == (4, 5)
+    assert pairs[0] == (1, 1)
+    assert pairs[-1] == (4, 5)
+
+
+def test_select_kernels_single():
+    pairs, nrows, ncols = select_kernels(4, 5, 2, 3)
+    assert pairs == [(2, 3)]
+    assert (nrows, ncols) == (1, 1)
+
+
+def test_select_kernels_row():
+    pairs, nrows, ncols = select_kernels(4, 5, 1, None)
+    assert len(pairs) == 5
+    assert (nrows, ncols) == (1, 5)
+
+
+def test_select_kernels_out_of_range():
+    with pytest.raises(ValueError, match="k_gp"):
+        select_kernels(4, 5, 5, None)
+    with pytest.raises(ValueError, match="phi_hf"):
+        select_kernels(4, 5, None, 0)
+
+
+# ---------------------------------------------------------------------------
+# plot_kernels / entrypoint
+# ---------------------------------------------------------------------------
+
+
+def test_plot_kernels_full_grid(tmp_path):
+    kernel, k_rg_1d, k_az_1d = _kernel(n_k=4, n_phi=5, n=60)
+    krg, kaz, kmin, kmax, _, _ = _grid(60)
+    mask = domain_mask(krg, kaz, kmin, kmax)
+    pairs, _, _ = select_kernels(4, 5, None, None)
+    out = tmp_path / "kernels.png"
+    plot_kernels(kernel, k_rg_1d, k_az_1d, mask, pairs, str(out), "all kernels")
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_plot_kernels_single(tmp_path):
+    kernel, k_rg_1d, k_az_1d = _kernel(n_k=4, n_phi=5, n=60)
+    krg, kaz, kmin, kmax, _, _ = _grid(60)
+    mask = domain_mask(krg, kaz, kmin, kmax)
+    out = tmp_path / "k1_phi1.png"
+    plot_kernels(kernel, k_rg_1d, k_az_1d, mask, [(1, 1)], str(out), "k1 phi1")
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_plot_kernels_empty_pairs(tmp_path):
+    kernel, k_rg_1d, k_az_1d = _kernel(n_k=2, n_phi=2, n=20)
+    krg, kaz, kmin, kmax, _, _ = _grid(20)
+    mask = domain_mask(krg, kaz, kmin, kmax)
+    with pytest.raises(ValueError, match="no kernel selected"):
+        plot_kernels(kernel, k_rg_1d, k_az_1d, mask, [], str(tmp_path / "x.png"), "t")
+
+
+def test_entrypoint_full(tmp_path):
+    out = tmp_path / "kernels.png"
+    rc = entrypoint(["--n-grid", "60", "--output-png", str(out)])
+    assert rc == 0
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_entrypoint_single_index(tmp_path):
+    out = tmp_path / "k1_phi1.png"
+    rc = entrypoint(
+        ["--k-gp", "1", "--phi-hf", "1", "--n-grid", "48", "--output-png", str(out)]
+    )
+    assert rc == 0
+    assert out.exists()
+
+
+def test_entrypoint_out_of_range():
+    rc = entrypoint(["--k-gp", "99", "--n-grid", "24"])
+    assert rc == 1
+
+
+def test_entrypoint_with_cwave_options(tmp_path):
+    # exercise the --cwave-* options (custom wavelength range and number of
+    # basis functions)
+    out = tmp_path / "custom.png"
+    rc = entrypoint(
+        [
+            "--k-gp",
+            "1",
+            "--n-grid",
+            "24",
+            "--cwave-wlmax",
+            "300",
+            "--cwave-wlmin",
+            "50",
+            "--cwave-nk",
+            "2",
+            "--cwave-nphi",
+            "3",
+            "--output-png",
+            str(out),
+        ]
+    )
+    assert rc == 0
+    assert out.exists()
+
+
+def test_entrypoint_default_output(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    rc = entrypoint(["--k-gp", "1", "--phi-hf", "1", "--n-grid", "24"])
+    assert rc == 0
+    produced = list(tmp_path.glob("cwave_kernels_*.png"))
+    assert len(produced) == 1
+    assert produced[0].stat().st_size > 0
