@@ -15,6 +15,11 @@ Axis convention (same as the latest ``xsar_slc`` commits and
 The kernels are masked outside the domain ``A`` (where the wavenumber mapping
 is not defined), so each panel shows the characteristic elliptical support.
 
+The kernel is even in the range wavenumber ``k_rg``, but the integration domain
+``A`` is **one-sided in range** (``k_rg >= 0``). The ``k_rg < 0`` half of each
+panel is therefore shaded to make clear that it is not part of ``A`` and is not
+integrated (see ``repository_specifications.md`` section 6.1).
+
 Usage::
 
     python -m cwaves.scripts.plot_kernels --output-png kernels.png
@@ -35,6 +40,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import xarray as xr  # noqa: E402
 from matplotlib.colors import Normalize  # noqa: E402
+from matplotlib.figure import Figure  # noqa: E402
 
 from cwaves.compute_cwaves import compute_kernel  # noqa: E402
 from cwaves.config import get_default_config  # noqa: E402
@@ -189,7 +195,7 @@ Y_LABEL = r"$k_y$ (azimuth)  [rad m$^{-1}$]"
 PANEL_TITLE = r"$k_{{gp}}$ = {kg},  $\varphi_{{hf}}$ = {ph}"
 
 
-def plot_kernels(
+def _build_figure(
     kernel: xr.Dataset,
     k_rg_1d: np.ndarray,
     k_az_1d: np.ndarray,
@@ -197,28 +203,13 @@ def plot_kernels(
     kmin: float,
     kmax: float,
     pairs: list[tuple[int, int]],
-    output_png: str,
     title: str,
-    cmap: str = "RdBu_r",
-) -> None:
-    """Render the selected CWAVE kernels as a grid of publication-quality panels.
+    cmap: str,
+) -> Figure:
+    """Build (but neither save nor close) the kernel figure.
 
-    Style : serif font (Times New Roman, STIX fallback), mathtext labels,
-    thin spines with inward ticks, a shared symmetric colorbar, the elliptic
-    domain-``A`` boundary drawn as a dashed contour, 300 dpi.
-
-    Args:
-        kernel: the kernel dataset from :func:`compute_kernel`
-            (variable ``cwave_kernel``, dims ``k_gp/phi_hf/i/j``).
-        k_rg_1d: 1D range-wavenumber axis (rad/m).
-        k_az_1d: 1D azimuth-wavenumber axis (rad/m).
-        mask: boolean domain-``A`` mask (dims ``i/j``).
-        kmin: minimum wavenumber (rad/m), for the domain boundary.
-        kmax: maximum wavenumber (rad/m), for the domain boundary.
-        pairs: ordered list of ``(k_gp, phi_hf)`` to plot.
-        output_png: path of the output PNG file.
-        title: figure super-title.
-        cmap: matplotlib colormap name (a diverging map is recommended).
+    See :func:`plot_kernels` for the argument documentation and the
+    publication-style / domain-``A`` shading description.
 
     Raises:
         ValueError: if ``pairs`` is empty.
@@ -254,10 +245,25 @@ def plot_kernels(
         constrained_layout=True,
     )
     pcm = None
-    for ax, (kg, ph), field in zip(axes.ravel(), pairs, fields, strict=True):
+    for ip, (ax, (kg, ph), field) in enumerate(
+        zip(axes.ravel(), pairs, fields, strict=True)
+    ):
         # field is (i=k_rg, j=k_az); pcolormesh wants (rows=k_az, cols=k_rg)
         pcm = ax.pcolormesh(
             k_rg_1d, k_az_1d, field.T, cmap=cmap, norm=norm, shading="auto"
+        )
+        # shade the k_rg < 0 half : the kernel is even in k_rg so this half is a
+        # mirror of the integrated one, but it is OUTSIDE the integration domain A
+        # (one-sided in range, see repository_specifications.md section 6.1)
+        ax.axvspan(
+            float(k_rg_1d.min()),
+            0.0,
+            facecolor="0.55",
+            alpha=0.13,
+            hatch="////",
+            edgecolor="0.55",
+            linewidth=0.0,
+            zorder=1,
         )
         ax.contour(
             k_rg_1d,
@@ -267,9 +273,29 @@ def plot_kernels(
             colors="0.35",
             linewidths=0.9,
             linestyles="--",
+            zorder=2,
         )
         if not single:
             ax.set_title(PANEL_TITLE.format(kg=kg, ph=ph))
+        if ip == 0:
+            ax.text(
+                0.04,
+                0.95,
+                r"$k_x<0$ : outside $A$",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=9 if not single else 11,
+                color="0.25",
+                zorder=5,
+                bbox={
+                    "boxstyle": "round,pad=0.25",
+                    "fc": "white",
+                    "ec": "0.7",
+                    "lw": 0.5,
+                    "alpha": 0.8,
+                },
+            )
         ax.set_aspect("equal")
         ax.set_xlim(float(k_rg_1d.min()), float(k_rg_1d.max()))
         ax.set_ylim(float(k_az_1d.min()), float(k_az_1d.max()))
@@ -287,6 +313,51 @@ def plot_kernels(
     )
     cbar.ax.tick_params(labelsize=10)
     fig.suptitle(title, fontsize=13)
+    return fig
+
+
+def plot_kernels(
+    kernel: xr.Dataset,
+    k_rg_1d: np.ndarray,
+    k_az_1d: np.ndarray,
+    mask: xr.DataArray,
+    kmin: float,
+    kmax: float,
+    pairs: list[tuple[int, int]],
+    output_png: str,
+    title: str,
+    cmap: str = "RdBu_r",
+) -> None:
+    """Render the selected CWAVE kernels to a PNG file.
+
+    The kernel is a smooth function over the whole wavenumber plane and is even
+    in the range wavenumber ``k_rg`` (the left half is a mirror of the right
+    half). The **integration domain ``A`` is one-sided in range** (``k_rg >= 0``,
+    see ``repository_specifications.md`` section 6.1), so the ``k_rg < 0`` half of
+    each panel is shaded (hatched gray) to make clear that it is *not* part of
+    ``A`` and is *not* integrated by :func:`compute_cwave_parameters`.
+
+    Style : serif font (Times New Roman, STIX fallback), mathtext labels,
+    thin spines with inward ticks, a shared symmetric colorbar, the elliptic
+    domain-``A`` boundary drawn as a dashed contour, 300 dpi.
+
+    Args:
+        kernel: the kernel dataset from :func:`compute_kernel`
+            (variable ``cwave_kernel``, dims ``k_gp/phi_hf/i/j``).
+        k_rg_1d: 1D range-wavenumber axis (rad/m).
+        k_az_1d: 1D azimuth-wavenumber axis (rad/m).
+        mask: boolean domain-``A`` mask (dims ``i/j``).
+        kmin: minimum wavenumber (rad/m), for the domain boundary.
+        kmax: maximum wavenumber (rad/m), for the domain boundary.
+        pairs: ordered list of ``(k_gp, phi_hf)`` to plot.
+        output_png: path of the output PNG file.
+        title: figure super-title.
+        cmap: matplotlib colormap name (a diverging map is recommended).
+
+    Raises:
+        ValueError: if ``pairs`` is empty.
+    """
+    fig = _build_figure(kernel, k_rg_1d, k_az_1d, mask, kmin, kmax, pairs, title, cmap)
     fig.savefig(output_png, bbox_inches="tight")
     plt.close(fig)
     logger.info("kernels saved to %s", output_png)

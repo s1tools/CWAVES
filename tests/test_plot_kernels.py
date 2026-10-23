@@ -6,10 +6,12 @@ checks the grid/mask/select helpers, the figure rendering and the CLI.
 
 import struct
 
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from cwaves.scripts.plot_kernels import (
+    _build_figure,
     build_kernel_grid,
     domain_mask,
     entrypoint,
@@ -152,6 +154,31 @@ def test_plot_kernels_single(tmp_path):
     # (font.family is a list in recent matplotlib versions)
     assert plt.rcParams["font.family"] in ("serif", ["serif"])
     assert plt.rcParams["mathtext.fontset"] == "stix"
+
+
+def test_plot_kernels_shades_half_domain():
+    # the k_rg < 0 half (outside the integration domain A, one-sided in range)
+    # must be shaded : a hatched Rectangle spanning [k_rg.min(), 0] plus a
+    # 'k_x<0 : outside A' annotation on the first panel
+    kernel, k_rg_1d, k_az_1d = _kernel(n_k=2, n_phi=2, n=30)
+    krg, kaz, kmin, kmax, _, _ = _grid(30)
+    mask = domain_mask(krg, kaz, kmin, kmax)
+    fig = _build_figure(
+        kernel, k_rg_1d, k_az_1d, mask, kmin, kmax, [(1, 1)], "t", "RdBu_r"
+    )
+    ax = fig.axes[0]
+    hatched = [
+        p
+        for p in ax.patches
+        if isinstance(p, mpatches.Rectangle)
+        and p.get_hatch()
+        and np.isclose(p.get_xy()[0] + p.get_width(), 0.0)
+        and p.get_xy()[0] < 0
+    ]
+    assert len(hatched) == 1  # exactly one k_rg<0 shading rectangle
+    # the 'outside A' annotation must be present on the (single) panel
+    assert any("outside" in t.get_text() for t in ax.texts)
+    plt.close(fig)
 
 
 def test_plot_kernels_empty_pairs(tmp_path):
