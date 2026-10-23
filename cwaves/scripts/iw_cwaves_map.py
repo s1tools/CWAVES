@@ -273,9 +273,21 @@ def compute_sarwave_subswath(
         n_tl, n_ts = ds.sizes["tile_line"], ds.sizes["tile_sample"]
         lons = ds["longitude"].values
         lats = ds["latitude"].values
+        # intraburst cross-spectra are lag-indexed (xspectra_{lag}tau_Re/Im with a
+        # '{lag}tau' dimension); interburst cross-spectra are plain
+        # 'xspectra_Re/Im' with no lag dimension.
+        re_var = (
+            f"xspectra_{lag}tau_Re" if f"xspectra_{lag}tau_Re" in ds else "xspectra_Re"
+        )
+        im_var = (
+            f"xspectra_{lag}tau_Im" if f"xspectra_{lag}tau_Im" in ds else "xspectra_Im"
+        )
         tau_dim = f"{lag}tau"
-        re = ds[f"xspectra_{lag}tau_Re"].isel(pol=pol_idx).mean(dim=tau_dim)
-        im = ds[f"xspectra_{lag}tau_Im"].isel(pol=pol_idx).mean(dim=tau_dim)
+        re = ds[re_var].isel(pol=pol_idx)
+        im = ds[im_var].isel(pol=pol_idx)
+        if tau_dim in re.dims:
+            re = re.mean(dim=tau_dim)
+            im = im.mean(dim=tau_dim)
         krg = ds["k_rg"]
         kaz = ds["k_az"]
         params = np.full((n_tl, n_ts, 4, 5), np.nan)
