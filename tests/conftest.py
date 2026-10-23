@@ -27,6 +27,16 @@ ASSETS_L1B_NC = (
     / "s1a_wv1_xsp_20250501t060101_058996_075117_dd24_a24.nc"
 )
 
+#: path of the reduced OCN IW osw per-subswath fixture (sinh grid, m/m units)
+ASSETS_OCN_IW1_NC = (
+    Path(__file__).resolve().parent.parent / "assets" / "s1d-iw1-osw-vv-fixture.nc"
+)
+
+#: path of the reduced SARWAVE L1B IW XSP per-subswath fixture (uniform, rad/m)
+ASSETS_SARWAVE_IW2_NC = (
+    Path(__file__).resolve().parent.parent / "assets" / "l1b-s1a-iw2-xsp-fixture.nc"
+)
+
 
 @pytest.fixture
 def osw_measurement_nc():
@@ -38,6 +48,18 @@ def osw_measurement_nc():
 def l1b_xsp_nc():
     """Path of the reduced SARWave L1B XSP cross-spectrum NetCDF fixture."""
     return ASSETS_L1B_NC
+
+
+@pytest.fixture
+def ocn_iw1_nc():
+    """Path of the reduced OCN IW osw per-subswath NetCDF fixture."""
+    return ASSETS_OCN_IW1_NC
+
+
+@pytest.fixture
+def sarwave_iw2_nc():
+    """Path of the reduced SARWAVE L1B IW XSP per-subswath NetCDF fixture."""
+    return ASSETS_SARWAVE_IW2_NC
 
 
 def _make_mock(shape):

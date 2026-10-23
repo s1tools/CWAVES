@@ -43,6 +43,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# the georeferenced map rendering (cwaves.scripts.iw_cwaves_map.plot_map) needs
+# cartopy; the CWAVE computation itself only needs the core deps (matplotlib is
+# already a core dependency).
+scripts = [
+  "cartopy",
+]
 dev = [
   "bandit",
   "codespell",
@@ -54,6 +60,7 @@ dev = [
   "coverage",
   "coverage-badge",
   "pytest-cov",
+  "cartopy",
 ]
 docs = [
   "sphinx",

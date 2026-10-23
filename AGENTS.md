@@ -37,7 +37,11 @@ pytest -c pyproject.toml --cov=cwaves --cov-report=term-missing tests/  # + cove
   (half) cross-spectrum (roadmap task 9). Two inputs : the SARWave L1B XSP
   cross-spectrum product (`--input-nc-l1b`, primary) and the ESA OCN WV
   Sentinel-1 measurement file (`--input-nc-osw`, polar `oswPolSpec` -> cartesian).
-- `cwaves/scripts/` — end-to-end scripts on IW subswaths (roadmap task 10).
+- `cwaves/scripts/iw_cwaves_map.py` — compute CWAVE on the IW subswaths (iw1/iw2/
+  iw3) of a Sentinel-1 IW product and render a georeferenced map. Handles both the
+  OCN IW measurement (`s1?-iw?-osw-*.nc`, sinh grid → resampled to regular, `m/m`
+  → rad/m) and the SARWAVE L1B XSP (`l1b-s1?-iw?-xsp-*.nc`, uniform rad/m). Map
+  rendering needs the `scripts` extra (cartopy) (roadmap task 10).
 - `cwaves/default_config.yml` — default `cwave_*` configuration (roadmap task 6).
 - `tests/` — unit tests (synthetic `xarray` data + the `assets/` fixture, no network).
 - `assets/` — an ESA OCN WV Sentinel-1 measurement NetCDF fixture.
