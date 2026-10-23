@@ -33,8 +33,8 @@ pytest -c pyproject.toml --cov=cwaves --cov-report=term-missing tests/  # + cove
 - `cwaves/compute_cwaves.py` — `compute_cwave_parameters`, `compute_kernel`,
   `gegenbauer_polynoms`, `harmonic_functions`.
 - `cwaves/symmetrize_xspectra.py` — `symmetrize_xspectrum`.
-- `cwaves/client.py` — CLI client (`cwaves-osw`) computing CWAVE on a
-  symmetrized cross-spectrum (roadmap task 9). Two inputs : the SARWave L1B XSP
+- `cwaves/client.py` — CLI client (`cwaves-osw`) computing CWAVE on a one-sided
+  (half) cross-spectrum (roadmap task 9). Two inputs : the SARWave L1B XSP
   cross-spectrum product (`--input-nc-l1b`, primary) and the ESA OCN WV
   Sentinel-1 measurement file (`--input-nc-osw`, polar `oswPolSpec` -> cartesian).
 - `cwaves/scripts/` — end-to-end scripts on IW subswaths (roadmap task 10).
@@ -53,6 +53,12 @@ pytest -c pyproject.toml --cov=cwaves --cov-report=term-missing tests/  # + cove
   `sqrt()` and `eta` is the exact Jacobian with the natural logarithm
   (see `repository_specifications.md` section 5). Do not "simplify" the `eta`
   expression back to the original buggy form.
+- `compute_cwave_parameters` is **fully compliant with the 2007 paper** : it
+  requires a **one-sided (half, `k_rg >= 0`)** cross-spectrum, uses only the
+  real modulus `|xs|`, and computes **without symmetrization** (on the one-sided
+  range domain). A full/symmetrized spectrum is rejected with a `ValueError`
+  (see `repository_specifications.md` section 6). Do not reintroduce the
+  internal symmetrization.
 
 ## Packaging / release
 

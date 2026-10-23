@@ -135,6 +135,16 @@ def test_compute_cwave_parameters(mock_xspectra_da):
         assert np.all(cp["k_gp"].values >= 0)
 
 
+def test_compute_cwave_parameters_rejects_full_spectrum(mock_xspectra_da):
+    # a full / symmetrized spectrum (two-sided range, k_rg < 0) must be rejected :
+    # the CWAVE computation is performed on the one-sided (half) range domain only
+    # (see repository_specifications.md section 6).
+    full = symmetrize_xspectrum(mock_xspectra_da)
+    assert float(full.k_rg.min()) < 0  # it is indeed two-sided in range
+    with pytest.raises(ValueError, match="one-sided"):
+        compute_cwave_parameters(full)
+
+
 def test_compute_cwave_parameters_with_kwargs(mock_xspectra_da_small):
     # custom cwave_* parameters (and unrelated kwargs) are honoured
     kwargs = {

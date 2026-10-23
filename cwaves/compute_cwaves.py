@@ -17,7 +17,24 @@ import copy
 import numpy as np
 import xarray as xr
 
-from cwaves.symmetrize_xspectra import symmetrize_xspectrum
+
+def _check_one_sided(xs):
+    """Raise if ``xs`` is not a one-sided (positive range) cross-spectrum.
+
+    The CWAVE parameters are computed directly on the one-sided (half) range
+    domain, as in Schultz-Stellenfleth et al. (2007) (see
+    ``repository_specifications.md`` section 6). A full / symmetrized spectrum
+    (with negative range wavenumbers) must not be passed.
+    """
+    krg_min = float(np.min(np.asarray(xs.k_rg)))
+    if krg_min < 0:
+        raise ValueError(
+            "compute_cwave_parameters expects a one-sided (k_rg >= 0) cross-spectrum. "
+            f"A full / symmetrized spectrum was detected (k_rg.min() = {krg_min:.3e}). "
+            "Compute the CWAVE parameters directly on the one-sided (half) range domain, "
+            "as in Schultz-Stellenfleth et al. (2007); do not symmetrize first "
+            "(see repository_specifications.md section 6)."
+        )
 
 
 # copy from xsarslc commit https://github.com/umr-lops/xsar_slc/commit/14f80b4663d82efe40d2243b65f02a835500d3d7
@@ -26,8 +43,21 @@ def compute_cwave_parameters(
 ):
     """
     Compute CWAVE parameters.
+
+    Input contract (fully compliant with the 2007 paper, see
+    ``repository_specifications.md`` section 6):
+        - ``xs`` must be a **one-sided (half)** cross-spectrum : positive
+          wavenumbers only in range (``k_rg >= 0``), two-sided in azimuth
+          (``k_az``). A **full / symmetrized** (two-sided range) spectrum is
+          rejected with a ``ValueError``.
+        - Only the **real, non-negative modulus** ``|xs|`` of the spectrum is
+          used : the complex phase is discarded, matching the paper's SAR image
+          variance spectrum (periodogram). The computation is performed directly
+          on the one-sided range domain (no symmetrization), as in
+          Schultz-Stellenfleth et al. (2007) equations 25-26 and B1.
+
     Args:
-        xs (xarray.Dataset) : complex ONE-SIDED xspectra
+        xs (xarray.Dataset) : complex ONE-SIDED xspectra (``k_rg >= 0``)
         cwave_wlmax (float, optional) : maximum wavelength
         cwave_wlmin (float, optional) : minimum wavelength
         cwave_Nk (int, optional) :
@@ -41,7 +71,7 @@ def compute_cwave_parameters(
     """
     kmin = 2.0 * np.pi / cwave_wlmax
     kmax = 2.0 * np.pi / cwave_wlmin
-    xs = symmetrize_xspectrum(xs)
+    _check_one_sided(xs)
     loc = xs.name.find("tau")
     tau = xs.name[loc - 1 : loc + 3] if loc != -1 else None
 

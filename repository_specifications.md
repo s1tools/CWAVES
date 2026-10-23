@@ -152,3 +152,103 @@ The kernels were integrated on the domain `A` (paper parameters `g=2`, `kmin=2 p
 Conclusion : the original `xsar_slc` implementation produces **non-orthogonal** kernels (off-diagonal contamination of ~24-39 %) because the `tmp` term cancels in `eta`. The missing `sqrt()` in the Gegenbauer coefficient and the `log10` choice affect only the normalization (absolute values), not the orthogonality.
 
 **Decision : the `CWAVES` lib implements the corrected version (section 5.1 + 5.2), non-configurable (no legacy option).** The method signatures remain identical to `xsar_slc` (section 3) ; only the internal computation of the `Gegenbauer` coefficient and of `eta` changes, which is a **bug fix** and not an API change. Consequently the CWAVE parameters differ from the uncorrected `xsar_slc` output.
+
+## 6. Input contract : one-sided (half) + real, no symmetrization (task 9)
+
+The CWAVE parameters must be computed **fully compliant with the 2007 paper**, not
+"conservatively" the way `xsar_slc` does it. This section fixes the input contract
+of `compute_cwave_parameters` and, in particular, **why a symmetrized (full)
+cross-spectrum is not an acceptable input**.
+
+### 6.1 What the paper does
+
+The 20 CWAVE parameters are the **projections of the SAR image variance spectrum
+`P` onto the orthonormal functions `h_i`**, integrated over the elliptic wavenumber
+domain `A` (equation 25):
+
+```
+S_i = ∫_A P(kx, ky) h_i(kx, ky) dkx dk y        (i = 1, ..., n_phi · n_k)
+```
+
+with two essential properties :
+
+1. **`P` is a real, non-negative spectrum.** `P` is the **periodogram** of the
+   (normalized) SAR imagette — "The periodogram of the wave mode imagette computed
+   using an FFT algorithm is used as an estimate of P" (equation 32) — normalized to
+   unit integral over `A` (equation 26). A periodogram is `|FFT|²` : **real and
+   non-negative**. The paper **never** uses a complex cross-spectrum nor its phase.
+
+2. **The integration domain `A` is a half wavenumber plane.** Equation B1 maps `A`
+   onto the rectangle `B = [-1, 1] × [-π/2, π/2]`, with the angular coordinate
+   `α_φ(kx, ky) = arctan(ky, kx) ∈ [-π/2, π/2]`. This range is only valid for
+   `kx ≥ 0`, so `A` is **one-sided in the range wavenumber (`kx`) and two-sided in
+   the azimuth wavenumber (`ky`)**. The orthonormality of the functions `h_i`
+   (equation 24) is defined over this half domain `A`, **not** over the full plane.
+
+### 6.2 The input contract of `compute_cwave_parameters`
+
+`compute_cwave_parameters(xs, ...)` therefore requires :
+
+- **`xs` : a one-sided (half) cross-spectrum** — positive wavenumbers only in range
+  (`k_rg >= 0`), two-sided in azimuth (`k_az`). This is exactly the domain `A` of
+  the paper (with the lib axis convention of section 4 : `kx = k_rg = range`,
+  `ky = k_az = azimuth`).
+- **Only the real, non-negative modulus `|xs|` is used** : the complex phase is
+  discarded, matching the paper's real image variance spectrum. `xs` may be passed
+  as a complex cross-spectrum (Re/Im) or directly as its real modulus.
+
+The computation is performed **directly on the one-sided range domain, without any
+symmetrization** (the `symmetrize_xspectrum` step that the `xsar_slc` reference
+inserted before the projection has been **removed**).
+
+### 6.3 Why a symmetrized (full) spectrum is not a good input
+
+`xsar_slc` symmetrizes the one-sided input to a full two-sided spectrum before the
+projection. This is a deviation from the paper and is rejected by this lib for the
+following reasons :
+
+1. **Wrong integration domain.** The paper integrates over the half domain `A`
+   (equations 24, 25). Symmetrizing turns the integration domain into the full 2D
+   plane, on which the kernels `h_i` are **not** orthonormal (their norm is doubled,
+   since they are antipodally even). The resulting coefficients are therefore **not**
+   the paper's `S_i`.
+
+2. **Distorted first (DC) range-bin weighting.** A one-sided FFT spectrum carries a
+   single DC bin (`k_rg = 0`) and the standard one-sided weighting. Symmetrization
+   rebuilds a two-sided grid (`2n − 2` points) and re-weights the DC bin and the grid
+   edges. Measured on a real SARWave L1B XSP product, computing on the symmetrized
+   full grid instead of the one-sided half grid shifts the CWAVE parameters by
+   **≈ 2.4 %** (relative). This is exactly the "specific weighting on the first bin
+   in range" that symmetrization was introduced to avoid — i.e. it changes the result
+   instead of preserving the paper's definition.
+
+3. **Unnecessary.** The integrand is the real modulus `|xs|` (antipodally even for a
+   real image) multiplied by kernels that are antipodally even (the angular basis is
+   made of π-periodic harmonics, so `h_i(k_rg, k_az) = h_i(−k_rg, −k_az)`). The
+   one-sided range domain `A` is therefore **complete** : the π-periodic harmonics
+   already span the whole wave-direction range on `k_rg >= 0`. Symmetrization only
+   appends the redundant mirrored half and buys nothing except the artifacts of
+   points 1 and 2.
+
+4. **Obscures the paper's structure.** The clean "orthonormal basis on `A`,
+   coefficients = projections" formulation (equations 24–26) only holds when the
+   integration is performed over `A`. Symmetrizing breaks that structure.
+
+### 6.4 Hardening in the code
+
+`compute_cwave_parameters` guards the input with `_check_one_sided(xs)` : if the
+spectrum carries negative range wavenumbers (`k_rg.min() < 0`, i.e. a full /
+symmetrized spectrum was passed) it raises a `ValueError` instead of silently
+computing on the wrong domain. `symmetrize_xspectrum` is kept as a **standalone
+utility** (its signature is part of section 3), but its output is **not** an
+accepted input of `compute_cwave_parameters`.
+
+### 6.5 Consequences
+
+- The CWAVE parameters of this lib differ from the `xsar_slc` reference values by
+  the ≈ 2.4 % of section 6.3 (the `xsar_slc` values were produced on the
+  symmetrized full grid). This is **intentional** : the goal is compliance with the
+  2007 paper, not agreement with the `xsar_slc` reference.
+- The public method signatures are unchanged (section 3). The change is internal to
+  `compute_cwave_parameters` (removal of the symmetrization step + the one-sided
+  guard) and is a **paper-compliance fix**, not an API change.

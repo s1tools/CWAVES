@@ -1,10 +1,12 @@
 """CLI client to compute CWAVE parameters from Sentinel-1 SARWave products.
 
-Two input product types are supported (roadmap task 9). Both feed the
-one-sided (positive range) / two-sided (azimuth) complex cross-spectrum to
-:func:`cwaves.compute_cwave_parameters`, which symmetrizes internally. The
-``kx = range``, ``ky = azimuth`` convention is the same as the latest
-``xsar_slc`` commits.
+Two input product types are supported (roadmap task 9). Both feed a
+**one-sided (half)** cross-spectrum (positive range ``k_rg >= 0``, two-sided
+azimuth ``k_az``) to :func:`cwaves.compute_cwave_parameters`, which computes the
+CWAVE parameters directly on that one-sided range domain using only the real
+modulus ``|xs|`` (paper-compliant, see ``repository_specifications.md``
+section 6). The ``kx = range``, ``ky = azimuth`` convention is the same as the
+latest ``xsar_slc`` commits.
 
 * **L1B XSP cross-spectrum** products (``S1A_WV1_XSP__...nc``) : self-contained
   cross-spectra ``xspectra_{lag}tau_Re/Im`` with ``k_rg`` / ``k_az`` coordinates

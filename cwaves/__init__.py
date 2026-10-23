@@ -3,9 +3,13 @@
 Public API
 ----------
 - :func:`cwaves.compute_cwave_parameters` : compute the CWAVE parameters from a
-  one-sided (positive range) complex cross-spectrum.
+  one-sided (half, ``k_rg >= 0``) cross-spectrum, using only its real modulus
+  ``|xs|`` on that one-sided range domain (a full/symmetrized spectrum is
+  rejected). Paper-compliant, see ``repository_specifications.md`` section 6.
 - :func:`cwaves.compute_kernel` : compute the orthonormal CWAVE kernels.
-- :func:`cwaves.symmetrize_xspectrum` : symmetrize a one-sided cross-spectrum.
+- :func:`cwaves.symmetrize_xspectrum` : standalone utility that symmetrizes a
+  one-sided cross-spectrum to a full one. Its output is **not** an accepted
+  input of :func:`cwaves.compute_cwave_parameters`.
 - :func:`cwaves.gegenbauer_polynoms` : Gegenbauer polynomials ``C_n^(3/2)``.
 - :func:`cwaves.harmonic_functions` : pi-periodic harmonic functions.
 - :func:`cwaves.get_default_config` / :func:`cwaves.load_config` : load the
