@@ -368,6 +368,18 @@ def plot_map(
     ax.set_title(title)
     if len(results) > 0:
         ax.legend(loc="upper left", fontsize=8)
+    gl = ax.gridlines(
+        crs=ccrs.PlateCarree(),
+        draw_labels=True,
+        linewidth=1.0,
+        color="gray",
+        alpha=0.5,
+        linestyle="--",
+    )
+    gl.top_labels = False
+    gl.right_labels = False
+    gl.xlabel_style = {"color": "black", "fontsize": 8}
+    gl.ylabel_style = {"color": "black", "fontsize": 8}
     fig.savefig(output_png, bbox_inches="tight")
     plt.close(fig)
     logger.info("map saved to %s", output_png)
