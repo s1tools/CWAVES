@@ -4,6 +4,9 @@ Builds the kernels on a synthetic two-sided meshgrid (no fixture needed) and
 checks the grid/mask/select helpers, the figure rendering and the CLI.
 """
 
+import struct
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from cwaves.scripts.plot_kernels import (
@@ -121,7 +124,9 @@ def test_plot_kernels_full_grid(tmp_path):
     mask = domain_mask(krg, kaz, kmin, kmax)
     pairs, _, _ = select_kernels(4, 5, None, None)
     out = tmp_path / "kernels.png"
-    plot_kernels(kernel, k_rg_1d, k_az_1d, mask, pairs, str(out), "all kernels")
+    plot_kernels(
+        kernel, k_rg_1d, k_az_1d, mask, kmin, kmax, pairs, str(out), "all kernels"
+    )
     assert out.exists()
     assert out.stat().st_size > 0
 
@@ -131,9 +136,22 @@ def test_plot_kernels_single(tmp_path):
     krg, kaz, kmin, kmax, _, _ = _grid(60)
     mask = domain_mask(krg, kaz, kmin, kmax)
     out = tmp_path / "k1_phi1.png"
-    plot_kernels(kernel, k_rg_1d, k_az_1d, mask, [(1, 1)], str(out), "k1 phi1")
+    plot_kernels(
+        kernel, k_rg_1d, k_az_1d, mask, kmin, kmax, [(1, 1)], str(out), "k1 phi1"
+    )
     assert out.exists()
     assert out.stat().st_size > 0
+    # the figure must be rendered at 300 dpi : a 12 in wide figure is 3600 px
+    # (bbox_inches="tight" trims the outer margins, so allow some headroom)
+    with open(out, "rb") as fh:
+        raw = fh.read(33)
+    assert raw[:8] == b"\x89PNG\r\n\x1a\n"  # valid PNG
+    width, height = struct.unpack(">II", raw[16:24])
+    assert width >= 2400 and height >= 1800
+    # the publication style (serif font) must have been applied
+    # (font.family is a list in recent matplotlib versions)
+    assert plt.rcParams["font.family"] in ("serif", ["serif"])
+    assert plt.rcParams["mathtext.fontset"] == "stix"
 
 
 def test_plot_kernels_empty_pairs(tmp_path):
@@ -141,7 +159,9 @@ def test_plot_kernels_empty_pairs(tmp_path):
     krg, kaz, kmin, kmax, _, _ = _grid(20)
     mask = domain_mask(krg, kaz, kmin, kmax)
     with pytest.raises(ValueError, match="no kernel selected"):
-        plot_kernels(kernel, k_rg_1d, k_az_1d, mask, [], str(tmp_path / "x.png"), "t")
+        plot_kernels(
+            kernel, k_rg_1d, k_az_1d, mask, kmin, kmax, [], str(tmp_path / "x.png"), "t"
+        )
 
 
 def test_entrypoint_full(tmp_path):

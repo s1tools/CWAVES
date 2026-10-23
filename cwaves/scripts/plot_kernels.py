@@ -85,6 +85,16 @@ def build_kernel_grid(
     return krg, kaz, kmin, kmax, k_rg_1d, k_az_1d
 
 
+def _domain_coeffs(kmin: float, kmax: float) -> tuple[float, float]:
+    """Return the (a1, a2) coefficients of the elliptic domain ``A``.
+
+    ``u = a1*kaz**4 + a2*kaz**2 + krg**2`` (paper equation B1, ``gamma=2``).
+    """
+    a1 = (GAMMA**2 - GAMMA**4) / (GAMMA**2 * kmin**2 - kmax**2)
+    a2 = (kmax**2 - GAMMA**4 * kmin**2) / (kmax**2 - GAMMA**2 * kmin**2)
+    return float(a1), float(a2)
+
+
 def domain_mask(
     krg: xr.DataArray, kaz: xr.DataArray, kmin: float, kmax: float
 ) -> xr.DataArray:
@@ -102,10 +112,46 @@ def domain_mask(
     Returns:
         A boolean DataArray (True inside the domain ``A``).
     """
-    a1 = (GAMMA**2 - GAMMA**4) / (GAMMA**2 * kmin**2 - kmax**2)
-    a2 = (kmax**2 - GAMMA**4 * kmin**2) / (kmax**2 - GAMMA**2 * kmin**2)
+    a1, a2 = _domain_coeffs(kmin, kmax)
     u = a1 * kaz**4 + a2 * kaz**2 + krg**2
     return (u >= kmin**2) & (u <= kmax**2)
+
+
+def _apply_style() -> None:
+    """Apply publication-quality matplotlib settings.
+
+    Serif font : Times New Roman when available on the system, otherwise
+    ``STIXGeneral`` (metric-compatible with Times New Roman, bundled with
+    matplotlib). Mathtext uses the matching STIX fontset so that the symbols
+    in the axis labels and titles blend with the roman text.
+    """
+    plt.rcParams.update(
+        {
+            "font.family": "serif",
+            "font.serif": ["Times New Roman", "STIXGeneral", "DejaVu Serif"],
+            "mathtext.fontset": "stix",
+            "font.size": 11,
+            "axes.labelsize": 12,
+            "axes.titlesize": 12,
+            "axes.titleweight": "normal",
+            "xtick.labelsize": 10,
+            "ytick.labelsize": 10,
+            "axes.linewidth": 0.8,
+            "xtick.direction": "in",
+            "ytick.direction": "in",
+            "xtick.major.size": 4.5,
+            "ytick.major.size": 4.5,
+            "xtick.major.width": 0.8,
+            "ytick.major.width": 0.8,
+            "xtick.minor.visible": False,
+            "ytick.minor.visible": False,
+            "axes.grid": False,
+            "figure.facecolor": "white",
+            "axes.facecolor": "white",
+            "savefig.facecolor": "white",
+            "savefig.dpi": 300,
+        }
+    )
 
 
 def select_kernels(
@@ -136,17 +182,30 @@ def select_kernels(
     return pairs, len(kgs), len(phs)
 
 
+#: axis labels (mathtext, library convention kx = range, ky = azimuth)
+X_LABEL = r"$k_x$ (range)  [rad m$^{-1}$]"
+Y_LABEL = r"$k_y$ (azimuth)  [rad m$^{-1}$]"
+#: panel title template (mathtext)
+PANEL_TITLE = r"$k_{{gp}}$ = {kg},  $\varphi_{{hf}}$ = {ph}"
+
+
 def plot_kernels(
     kernel: xr.Dataset,
     k_rg_1d: np.ndarray,
     k_az_1d: np.ndarray,
     mask: xr.DataArray,
+    kmin: float,
+    kmax: float,
     pairs: list[tuple[int, int]],
     output_png: str,
     title: str,
     cmap: str = "RdBu_r",
 ) -> None:
-    """Render the selected CWAVE kernels as a grid of 2D panels.
+    """Render the selected CWAVE kernels as a grid of publication-quality panels.
+
+    Style : serif font (Times New Roman, STIX fallback), mathtext labels,
+    thin spines with inward ticks, a shared symmetric colorbar, the elliptic
+    domain-``A`` boundary drawn as a dashed contour, 300 dpi.
 
     Args:
         kernel: the kernel dataset from :func:`compute_kernel`
@@ -154,6 +213,8 @@ def plot_kernels(
         k_rg_1d: 1D range-wavenumber axis (rad/m).
         k_az_1d: 1D azimuth-wavenumber axis (rad/m).
         mask: boolean domain-``A`` mask (dims ``i/j``).
+        kmin: minimum wavenumber (rad/m), for the domain boundary.
+        kmax: maximum wavenumber (rad/m), for the domain boundary.
         pairs: ordered list of ``(k_gp, phi_hf)`` to plot.
         output_png: path of the output PNG file.
         title: figure super-title.
@@ -164,8 +225,10 @@ def plot_kernels(
     """
     if not pairs:
         raise ValueError("no kernel selected to plot")
+    _apply_style()
     nrows = len({kg for kg, _ in pairs})
     ncols = len({ph for _, ph in pairs})
+    single = nrows == 1 and ncols == 1
 
     fields: list[np.ndarray] = []
     for kg, ph in pairs:
@@ -176,8 +239,19 @@ def plot_kernels(
     vmax = float(np.abs(finite).max()) if finite.size else 1.0
     norm = Normalize(vmin=-vmax, vmax=vmax)
 
+    # domain-A boundary (dashed contour), computed once on the full grid
+    a1, a2 = _domain_coeffs(kmin, kmax)
+    krg_grid, kaz_grid = np.meshgrid(k_rg_1d, k_az_1d, indexing="ij")
+    u_grid = a1 * kaz_grid**4 + a2 * kaz_grid**2 + krg_grid**2
+
+    figsize = (12.0, 10.0) if single else (2.8 * ncols + 0.8, 2.85 * nrows + 0.8)
     fig, axes = plt.subplots(
-        nrows, ncols, figsize=(2.4 * ncols, 2.1 * nrows), dpi=150, squeeze=False
+        nrows,
+        ncols,
+        figsize=figsize,
+        dpi=300,
+        squeeze=False,
+        constrained_layout=True,
     )
     pcm = None
     for ax, (kg, ph), field in zip(axes.ravel(), pairs, fields, strict=True):
@@ -185,18 +259,34 @@ def plot_kernels(
         pcm = ax.pcolormesh(
             k_rg_1d, k_az_1d, field.T, cmap=cmap, norm=norm, shading="auto"
         )
-        ax.set_title(f"k_gp={kg}, phi_hf={ph}", fontsize=9)
+        ax.contour(
+            k_rg_1d,
+            k_az_1d,
+            u_grid.T,
+            levels=[kmin**2, kmax**2],
+            colors="0.35",
+            linewidths=0.9,
+            linestyles="--",
+        )
+        if not single:
+            ax.set_title(PANEL_TITLE.format(kg=kg, ph=ph))
         ax.set_aspect("equal")
         ax.set_xlim(float(k_rg_1d.min()), float(k_rg_1d.max()))
         ax.set_ylim(float(k_az_1d.min()), float(k_az_1d.max()))
     for ax in axes[-1, :]:
-        ax.set_xlabel("kx (range) [rad/m]", fontsize=9)
+        ax.set_xlabel(X_LABEL)
     for ax in axes[:, 0]:
-        ax.set_ylabel("ky (azimuth) [rad/m]", fontsize=9)
+        ax.set_ylabel(Y_LABEL)
     if pcm is None:  # unreachable : pairs is non-empty (checked above)
         raise ValueError("no kernel was rendered")
-    fig.suptitle(title, fontsize=11)
-    fig.colorbar(pcm, ax=axes.ravel().tolist(), label="kernel amplitude", pad=0.02)
+    cbar = fig.colorbar(
+        pcm,
+        ax=axes.ravel().tolist(),
+        label="kernel amplitude",
+        pad=0.10 if single else 0.08,
+    )
+    cbar.ax.tick_params(labelsize=10)
+    fig.suptitle(title, fontsize=13)
     fig.savefig(output_png, bbox_inches="tight")
     plt.close(fig)
     logger.info("kernels saved to %s", output_png)
@@ -307,7 +397,9 @@ def entrypoint(argv: list[str] | None = None) -> int:
         f"CWAVE kernels (Schulz-Stellenfleth et al. 2007) - "
         f"Nk={n_k}, Nphi={n_phi}, wl {int(wlmin)}-{int(wlmax)} m"
     )
-    plot_kernels(kernel, k_rg_1d, k_az_1d, mask, pairs, out_png, title, args.cmap)
+    plot_kernels(
+        kernel, k_rg_1d, k_az_1d, mask, kmin, kmax, pairs, out_png, title, args.cmap
+    )
     logger.info("done")
     return 0
 
