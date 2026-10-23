@@ -196,6 +196,8 @@ with two essential properties :
 - **Only the real, non-negative modulus `|xs|` is used** : the complex phase is
   discarded, matching the paper's real image variance spectrum. `xs` may be passed
   as a complex cross-spectrum (Re/Im) or directly as its real modulus.
+- **`xs` must be sampled on a uniform (regular) wavenumber grid** in both `k_rg`
+  (range) and `k_az` (azimuth) — see section 6.6.
 
 The computation is performed **directly on the one-sided range domain, without any
 symmetrization** (the `symmetrize_xspectrum` step that the `xsar_slc` reference
@@ -252,3 +254,45 @@ accepted input of `compute_cwave_parameters`.
 - The public method signatures are unchanged (section 3). The change is internal to
   `compute_cwave_parameters` (removal of the symmetrization step + the one-sided
   guard) and is a **paper-compliance fix**, not an API change.
+
+### 6.6 The wavenumber grid must be uniform (regular) in `k_rg` and `k_az`
+
+The projection integral (equation 25) is approximated by a **rectangle rule with a
+single constant cell area**. In `compute_cwave_parameters` the cell area is computed
+once as the **mean spacing** along each axis :
+
+```python
+dkrg = xxs.k_rg.diff(dim="freq_sample").mean(dim="freq_sample")
+dkaz = xxs.k_az.diff(dim="freq_line").mean(dim="freq_line")
+cwave = ((kernel * xxsmn) * dkrg * dkaz).sum(dim=["freq_sample", "freq_line"], ...)
+```
+
+The kernel `h_i` is **evaluated at the true grid coordinates** (`alpha_k` and
+`alpha_phi` are functions of the actual `k_rg` / `k_az` values), so a non-uniform
+grid is not rejected — but the **integration weight `dkrg · dkaz` is only exact when
+the grid is uniform** in both axes :
+
+- **Uniform grid** → `mean(diff)` equals the constant spacing → `dkrg · dkaz` is the
+  exact cell area → the projection is correct.
+- **Irregular grid** → the kernel is still at the right points, but the constant
+  weight is only the *average* spacing → the CWAVE integral is **biased** (small for
+  mild irregularity, large for a strongly non-linear grid, e.g. log-spaced). The
+  computation does not fail; the result is simply wrong.
+
+Therefore the input `xs` **must be sampled on a uniform wavenumber grid in both
+`k_rg` (range) and `k_az` (azimuth)**. This is a natural, not extra, assumption :
+the paper's `P` is the periodogram of the imagette on a regular FFT grid (equation
+32), so a uniform wavenumber grid is exactly the sampling the method is defined for.
+
+In practice the supported inputs all satisfy this :
+
+| input | grid | uniform? |
+|-------|------|:--------:|
+| SARWave L1B XSP (`--input-nc-l1b`) | `k_rg` / `k_az` (rel. std of spacing ≈ 1e-6) | ✓ |
+| OCN WV measurement (`--input-nc-osw`) | `polar_to_cartesian` resamples onto `np.linspace` (rel. std 0) | ✓ |
+
+Note : the `kmin/kmax` frequency mask plus `dropna` (see section 6.2) keeps a
+contiguous sub-block of the grid, which preserves uniformity. A non-uniform input
+(e.g. the OCN product's own `oswKx`/`oswKy`, rel. std of spacing ≈ 1) **must not** be
+fed directly to `compute_cwave_parameters` ; it must first be resampled onto a
+uniform grid (as `polar_to_cartesian` does for the polar `oswPolSpec`).

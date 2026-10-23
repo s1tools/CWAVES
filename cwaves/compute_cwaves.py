@@ -55,6 +55,10 @@ def compute_cwave_parameters(
           variance spectrum (periodogram). The computation is performed directly
           on the one-sided range domain (no symmetrization), as in
           Schultz-Stellenfleth et al. (2007) equations 25-26 and B1.
+        - ``xs`` must be sampled on a **uniform (regular) wavenumber grid** in both
+          ``k_rg`` (range) and ``k_az`` (azimuth) : the projection integral uses a
+          single constant cell area (the mean spacing), which is exact only for a
+          uniform grid (see ``repository_specifications.md`` section 6.6).
 
     Args:
         xs (xarray.Dataset) : complex ONE-SIDED xspectra (``k_rg >= 0``)
