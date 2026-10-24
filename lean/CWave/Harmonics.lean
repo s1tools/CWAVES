@@ -28,6 +28,7 @@ vanishes there). -/
 
 namespace CWave
 open Real Set MeasureTheory
+public section
 
 /-! ## Frequencies -/
 
@@ -39,65 +40,66 @@ lemma freq_one : freq 1 = 0 := by simp [freq]
 lemma freq_even (m : ℕ) (hm : Even m) : freq m = if m = 1 then 0 else m := by
   simp [freq, hm]
 lemma freq_odd (m : ℕ) (hm : Odd m) : freq m = if m = 1 then 0 else m - 1 := by
-  simp [freq, hm]
+  rcases hm with ⟨k, rfl⟩
+  by_cases h1 : 2 * k + 1 = 1
+  · rw [h1]; simp [freq]
+  · have hne : ¬ Even (2 * k + 1) := by
+      intro he; rcases he with ⟨a, h⟩; omega
+    simp [freq, h1, hne]
 
 /-! ## Elementary integrals on `[-pi/2, pi/2]` -/
 
 /-- `∫_{-pi/2}^{pi/2} 1 dt = pi`. -/
-lemma integral_const_pi : ∫ t in (-Real.pi / 2)..(Real.pi / 2), 1 = Real.pi := by
-  simp [integral_const]
+lemma integral_const_pi : ∫ _ in (-Real.pi / 2)..(Real.pi / 2), 1 = Real.pi := by
+  simp
   ring
 
-/-- `∫_{-pi/2}^{pi/2} sin(k t) dt = 0` for a nonzero even integer `k`. -/
-lemma integral_sin_even (k : ℤ) (hk : k ≠ 0) (hke : Even k) :
+/-- `∫_{-pi/2}^{pi/2} sin(k t) dt = 0` for any nonzero integer `k` (sin is odd and
+    the interval is symmetric about 0). -/
+lemma integral_sin_even (k : ℤ) (hk : k ≠ 0) :
     ∫ t in (-Real.pi / 2)..(Real.pi / 2), Real.sin (k * t) = 0 := by
   have hkR : (k : ℝ) ≠ 0 := by exact_mod_cast hk
   calc
     ∫ t in (-Real.pi / 2)..(Real.pi / 2), Real.sin (k * t)
-        = (1 / (k : ℝ)) * (Real.cos (k * (-(Real.pi / 2))) - Real.cos (k * (Real.pi / 2))) := by
-      have := integral_comp_mul_left hkR (f := fun x : ℝ => Real.sin x)
-      simpa [mul_comm, mul_assoc] using this
-    _ = 0 := by
-      have : Real.cos (k * (-(Real.pi / 2))) = Real.cos (k * (Real.pi / 2)) := by
-        ring_nf
-        rw [Real.cos_neg]
-        ring
-      rw [this, sub_self]
-      simp
+        = (1 / (k : ℝ)) * ∫ x in (k : ℝ) * (-Real.pi / 2)..(k : ℝ) * (Real.pi / 2), Real.sin x := by
+      rw [intervalIntegral.integral_comp_mul_left hkR (f := fun x : ℝ => Real.sin x)]
+      simp [one_div]
+    _ = (1 / (k : ℝ)) *
+        (Real.cos ((k : ℝ) * (-Real.pi / 2)) - Real.cos ((k : ℝ) * (Real.pi / 2))) := by
+      rw [integral_sin]
+    _ = (1 / (k : ℝ)) * (Real.cos (k * (Real.pi / 2)) - Real.cos (k * (Real.pi / 2))) := by
+      have hneg : (k : ℝ) * (-Real.pi / 2) = -((k : ℝ) * (Real.pi / 2)) := by ring
+      rw [hneg, Real.cos_neg]
+    _ = 0 := by ring
+
+/-- `sin(k * pi/2) = 0` when `k` is even : `k * pi/2` is then an integer multiple of pi. -/
+lemma sin_even_k_half_pi (k : ℤ) (hke : Even k) : Real.sin ((k : ℝ) * (Real.pi / 2)) = 0 := by
+  rcases hke with ⟨j, rfl⟩
+  -- k = j + j, so k * pi/2 = j * pi : an integer multiple of pi
+  have hj : (↑(j + j) : ℝ) * (Real.pi / 2) = (↑j : ℝ) * Real.pi := by
+    simp only [Int.cast_add]
+    ring
+  rw [hj]
+  exact Real.sin_int_mul_pi (j : ℤ)
 
 /-- `∫_{-pi/2}^{pi/2} cos(k t) dt = 0` for a nonzero even integer `k`. -/
 lemma integral_cos_even (k : ℤ) (hk : k ≠ 0) (hke : Even k) :
     ∫ t in (-Real.pi / 2)..(Real.pi / 2), Real.cos (k * t) = 0 := by
   have hkR : (k : ℝ) ≠ 0 := by exact_mod_cast hk
-  -- k * pi/2 = (k/2) * pi, an integer multiple of pi (k even)
-  have hred : (k : ℝ) * (Real.pi / 2) = (k / 2 : ℝ) * Real.pi := by
-    have hd : (2 : ℤ) ∣ k := by rw [even_iff_two_dvd] at hke; exact hke
-    have := Int.ediv_mul_cancel hd
-    ring_nf
-    norm_cast at this ⊢
-    simpa using this
-  have hsin : Real.sin (k * (Real.pi / 2)) = 0 := by
-    rw [show (k * (Real.pi / 2) : ℝ) = (k / 2 : ℝ) * Real.pi by
-      calc
-        k * (Real.pi / 2) = (k : ℝ) * Real.pi / 2 := by ring
-        _ = (k / 2 : ℝ) * Real.pi := by
-          convert hred
-          ring]
-    have : (k / 2 : ℝ) * Real.pi = (k / 2 : ℤ) * Real.pi := by norm_cast
-    rw [this]
-    simpa using Real.sin_int_mul_pi (k / 2)
-  -- antiderivative of cos(k t) is sin(k t)/k, evaluated at the symmetric bounds
   calc
     ∫ t in (-Real.pi / 2)..(Real.pi / 2), Real.cos (k * t)
-        = Real.sin (k * (Real.pi / 2)) / k - Real.sin (k * (-(Real.pi / 2))) / k := by
-      have := integral_comp_mul_left hkR (f := fun x : ℝ => Real.cos x)
-      simpa [mul_comm, mul_assoc] using this
-    _ = Real.sin (k * (Real.pi / 2)) / k - (-Real.sin (k * (Real.pi / 2))) / k := by
-      congr
-      rw [show (k : ℝ) * (-(Real.pi / 2)) = -(k * (Real.pi / 2)) by ring, Real.sin_neg]
-    _ = 2 * Real.sin (k * (Real.pi / 2)) / k := by ring
-    _ = 0 := by
-      rw [hsin]
-      ring
+        = (1 / (k : ℝ)) * ∫ x in (k : ℝ) * (-Real.pi / 2)..(k : ℝ) * (Real.pi / 2), Real.cos x := by
+      rw [intervalIntegral.integral_comp_mul_left hkR (f := fun x : ℝ => Real.cos x)]
+      simp [one_div]
+    _ = (1 / (k : ℝ)) *
+        (Real.sin ((k : ℝ) * (Real.pi / 2)) - Real.sin ((k : ℝ) * (-Real.pi / 2))) := by
+      rw [integral_cos]
+    _ = (1 / (k : ℝ)) * (0 - 0) := by
+      rw [sin_even_k_half_pi k hke]
+      rw [show (k : ℝ) * (-Real.pi / 2) = -((k : ℝ) * (Real.pi / 2)) by ring, Real.sin_neg,
+        sin_even_k_half_pi k hke]
+      simp
+    _ = 0 := by ring
 
+end
 end CWave
