@@ -46,6 +46,7 @@ def compute_cwave_parameters(
 
     Input contract (fully compliant with the 2007 paper, see
     ``repository_specifications.md`` section 6):
+
         - ``xs`` must be a **one-sided (half)** cross-spectrum : positive
           wavenumbers only in range (``k_rg >= 0``), two-sided in azimuth
           (``k_az``). A **full / symmetrized** (two-sided range) spectrum is
