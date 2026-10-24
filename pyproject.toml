@@ -110,6 +110,9 @@ exclude = [
   "env",
   "venv",
   "_version.py",
+  # upstream review/analysis file (present since the `cls_issue` base), not part
+  # of the `cwaves` package : excluded from linting (see repository_specifications.md)
+  "cwaves_review_cls.py",
 ]
 
 [tool.ruff.lint]
