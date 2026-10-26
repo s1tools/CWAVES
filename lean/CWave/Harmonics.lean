@@ -100,40 +100,39 @@ lemma integral_cos_cos (a b : ℕ) (ha : Even a) (hb : Even b) :
       if a = b then (if a = 0 then π else π / 2) else 0 := by
   let k : ℤ := (a : ℤ) - (b : ℤ)
   let l : ℤ := (a : ℤ) + (b : ℤ)
-  have hId : ∀ t, 2 * (cos (a * t) * cos (b * t)) = cos (k * t) + cos (l * t) := by
+  have hId : ∀ t, 2 * (cos (a * t) * cos (b * t)) =
+      cos (((a : ℝ) - (b : ℝ)) * t) + cos (((a : ℝ) + (b : ℝ)) * t) := by
     intro t
-    have hkR : (k : ℝ) = (a : ℝ) - (b : ℝ) := by simp [k]
-    have hlR : (l : ℝ) = (a : ℝ) + (b : ℝ) := by simp [l]
-    have hsub : (a : ℝ) * t - (b : ℝ) * t = (k : ℝ) * t := by
-      rw [hkR]; ring
-    have hadd : (a : ℝ) * t + (b : ℝ) * t = (l : ℝ) * t := by
-      rw [hlR]; ring
+    have hsub : (a : ℝ) * t - (b : ℝ) * t = ((a : ℝ) - (b : ℝ)) * t := by ring
+    have hadd : (a : ℝ) * t + (b : ℝ) * t = ((a : ℝ) + (b : ℝ)) * t := by ring
     calc
-      2 * (cos (a * t) * cos (b * t))
-        = 2 * cos (a * t) * cos (b * t) := by ring
-      _ = cos (a * t - b * t) + cos (a * t + b * t) := by
-        rw [two_mul_cos_mul_cos]
-      _ = cos (k * t) + cos (l * t) := by rw [hsub, hadd]
+      2 * (cos (a * t) * cos (b * t)) = 2 * cos (a * t) * cos (b * t) := by ring
+      _ = cos (a * t - b * t) + cos (a * t + b * t) := by rw [two_mul_cos_mul_cos]
+      _ = cos (((a : ℝ) - (b : ℝ)) * t) + cos (((a : ℝ) + (b : ℝ)) * t) := by
+        rw [hsub, hadd]
   by_cases heq : a = b
   · by_cases ha0 : a = 0
     · -- a = b = 0 : integrand is 1, integral is pi, RHS = pi
       have hb0 : b = 0 := by rw [← heq]; exact ha0
-      have hI : ∫ t in (-π / 2)..(π / 2), cos (b * t) * cos (b * t) = π := by
-        have hInt : ∀ t, cos (b * t) * cos (b * t) = 1 := by
-          intro t
-          simp [hb0, zero_mul, cos_zero]
-        rw [intervalIntegral.integral_congr (fun t _ => hInt t)]
-        exact integral_const_pi
-      simp [heq, ha0, hb0, hI]
-    · -- a = b >= 1
+      simp [heq, ha0, hb0, zero_mul, cos_zero]
+      ring
+    · -- a = b >= 1 : ∫ cos(a t)^2 = pi/2
       let m2 : ℤ := 2 * (a : ℤ)
       have hI : ∫ t in (-π / 2)..(π / 2), cos (a * t) * cos (b * t) = π / 2 := by
         have hEq : ∀ t, 2 * (cos (a * t) * cos (b * t)) = 1 + cos (m2 * t) := by
           intro t
           rw [hId]
-          have hk0 : (k : ℝ) = 0 := by simp [k, heq]
-          have hl : (l : ℝ) = (m2 : ℝ) := by simp [l, heq, m2]
-          rw [hk0, hl, zero_mul, cos_zero]
+          have hd : ((a : ℝ) - (b : ℝ)) = (0 : ℝ) := by rw [heq]; ring
+          have hs : ((a : ℝ) + (b : ℝ)) = (m2 : ℝ) := by
+            have hmb : (m2 : ℝ) = (2 * a : ℝ) := by
+              have : (m2 : ℤ) = 2 * (a : ℤ) := by simp [m2]
+              rw [this]
+              norm_cast
+            rw [hmb, heq]
+            ring
+          rw [show cos (((a : ℝ) - (b : ℝ)) * t) = cos (0 * t) by rw [hd],
+            show cos (((a : ℝ) + (b : ℝ)) * t) = cos (m2 * t) by rw [hs]]
+          simp [zero_mul, cos_zero]
         have h2 : ∫ t in (-π / 2)..(π / 2), 2 * (cos (a * t) * cos (b * t)) =
             ∫ t in (-π / 2)..(π / 2), 1 + cos (m2 * t) := by
           rw [intervalIntegral.integral_congr (fun t _ => hEq t)]
@@ -150,7 +149,9 @@ lemma integral_cos_cos (a b : ℕ) (ha : Even a) (hb : Even b) :
           exact ha0 ‹a = 0›
         have h4 : ∫ t in (-π / 2)..(π / 2), cos (m2 * t) = 0 :=
           integral_cos_even m2 hNonz hEven
-        have h5 : ∫ t in (-π / 2)..(π / 2), 1 = π := integral_const_pi
+        have h5 : ∫ t in (-π / 2)..(π / 2), 1 = π := by
+          simp
+          ring
         have h2s : ∫ t in (-π / 2)..(π / 2), 2 * (cos (a * t) * cos (b * t)) = π := by
           rw [h2, h3, h5, h4]
           ring
@@ -158,30 +159,23 @@ lemma integral_cos_cos (a b : ℕ) (ha : Even a) (hb : Even b) :
             2 * (∫ t in (-π / 2)..(π / 2), cos (a * t) * cos (b * t)) := by
           rw [intervalIntegral.integral_const_mul]
         nlinarith [hmul, h2s]
-      simp [hI, heq]
-  · have hsubn : k ≠ 0 := by
+      have hbne : b ≠ 0 := by simpa [heq] using ha0
+      simp [hI, heq, hbne]
+  · -- a ≠ b : both frequencies (a-b), (a+b) are nonzero even -> both integrals 0
+    have hsubn : k ≠ 0 := by
       intro h
-      have : (a : ℤ) = (b : ℤ) := by
-        rw [show k = (a : ℤ) - (b : ℤ) by simp [k], h]
-        simp
-      exact heq (by exact_mod_cast ‹(a : ℤ) = (b : ℤ)›)
+      have hkn : (a : ℤ) - (b : ℤ) = 0 := by simpa [k] using h
+      have : (a : ℤ) = (b : ℤ) := by linarith
+      exact heq (by exact_mod_cast this)
     have hsumn : l ≠ 0 := by
       intro h
-      have hsum : (a : ℤ) + (b : ℤ) = 0 := by
-        rw [show l = (a : ℤ) + (b : ℤ) by simp [l], h]
-      have ha0z : (a : ℤ) = 0 := by
-        have : (a : ℤ) ≥ 0 := by exact_mod_cast
-        have : (a : ℤ) ≤ 0 := by
-          have : (b : ℤ) ≥ 0 := by exact_mod_cast
-          nlinarith
-        nlinarith
-      have hb0z : (b : ℤ) = 0 := by
-        have : (b : ℤ) ≥ 0 := by exact_mod_cast
-        have : (b : ℤ) ≤ 0 := by
-          have : (a : ℤ) ≥ 0 := by exact_mod_cast
-          nlinarith
-        nlinarith
-      exact heq (by exact_mod_cast (by rw [ha0z, hb0z]; simp))
+      have hln : (a : ℤ) + (b : ℤ) = 0 := by simpa [l] using h
+      have hae : (a : ℤ) ≥ 0 := by exact_mod_cast
+      have hbe : (b : ℤ) ≥ 0 := by exact_mod_cast
+      have ha0z : (a : ℤ) = 0 := by nlinarith
+      have hb0z : (b : ℤ) = 0 := by nlinarith
+      have : (a : ℤ) = (b : ℤ) := by simpa [ha0z, hb0z]
+      exact heq (by exact_mod_cast this)
     have hsubE : Even k := by
       rcases ha with ⟨x, rfl⟩
       rcases hb with ⟨y, rfl⟩
@@ -194,10 +188,25 @@ lemma integral_cos_cos (a b : ℕ) (ha : Even a) (hb : Even b) :
       use (x + y : ℤ)
       norm_cast
       ring
-    have h0 : ∫ t in (-π / 2)..(π / 2), cos (k * t) = 0 := integral_cos_even k hsubn hsubE
-    have h1 : ∫ t in (-π / 2)..(π / 2), cos (l * t) = 0 := integral_cos_even l hsumn hsumE
+    have h0 : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) - (b : ℝ)) * t) = 0 := by
+      have hd : ((a : ℝ) - (b : ℝ)) = (k : ℝ) := by simp [Int.cast_sub]
+      have hcong : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) - (b : ℝ)) * t) =
+          ∫ t in (-π / 2)..(π / 2), cos (k * t) := by
+        apply intervalIntegral.integral_congr
+        intro t _
+        rw [show ((a : ℝ) - (b : ℝ)) * t = (k : ℝ) * t by rw [hd]]
+      rw [hcong, integral_cos_even k hsubn hsubE]
+    have h1 : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) + (b : ℝ)) * t) = 0 := by
+      have hl : ((a : ℝ) + (b : ℝ)) = (l : ℝ) := by simp [Int.cast_add]
+      have hcong : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) + (b : ℝ)) * t) =
+          ∫ t in (-π / 2)..(π / 2), cos (l * t) := by
+        apply intervalIntegral.integral_congr
+        intro t _
+        rw [show ((a : ℝ) + (b : ℝ)) * t = (l : ℝ) * t by rw [hl]]
+      rw [hcong, integral_cos_even l hsumn hsumE]
     have h2 : ∫ t in (-π / 2)..(π / 2), 2 * (cos (a * t) * cos (b * t)) =
-        (∫ t in (-π / 2)..(π / 2), cos (k * t)) + (∫ t in (-π / 2)..(π / 2), cos (l * t)) := by
+        (∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) - (b : ℝ)) * t)) +
+        (∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) + (b : ℝ)) * t)) := by
       rw [intervalIntegral.integral_congr (fun t _ => hId t)]
       rw [intervalIntegral.integral_add] <;> exact fun_prop
     have h2s : ∫ t in (-π / 2)..(π / 2), 2 * (cos (a * t) * cos (b * t)) = 0 := by
@@ -217,34 +226,38 @@ lemma integral_sin_sin (a b : ℕ) (ha : Even a) (hb : Even b) :
       if a = b then (if a = 0 then 0 else π / 2) else 0 := by
   let k : ℤ := (a : ℤ) - (b : ℤ)
   let l : ℤ := (a : ℤ) + (b : ℤ)
-  have hId : ∀ t, 2 * (sin (a * t) * sin (b * t)) = cos (k * t) - cos (l * t) := by
+  have hId : ∀ t, 2 * (sin (a * t) * sin (b * t)) =
+      cos (((a : ℝ) - (b : ℝ)) * t) - cos (((a : ℝ) + (b : ℝ)) * t) := by
     intro t
-    have hkR : (k : ℝ) = (a : ℝ) - (b : ℝ) := by simp [k]
-    have hlR : (l : ℝ) = (a : ℝ) + (b : ℝ) := by simp [l]
-    have hsub : (a : ℝ) * t - (b : ℝ) * t = (k : ℝ) * t := by
-      rw [hkR]; ring
-    have hadd : (a : ℝ) * t + (b : ℝ) * t = (l : ℝ) * t := by
-      rw [hlR]; ring
+    have hsub : (a : ℝ) * t - (b : ℝ) * t = ((a : ℝ) - (b : ℝ)) * t := by ring
+    have hadd : (a : ℝ) * t + (b : ℝ) * t = ((a : ℝ) + (b : ℝ)) * t := by ring
     calc
-      2 * (sin (a * t) * sin (b * t))
-        = 2 * sin (a * t) * sin (b * t) := by ring
-      _ = cos (a * t - b * t) - cos (a * t + b * t) := by
-        rw [two_mul_sin_mul_sin]
-      _ = cos (k * t) - cos (l * t) := by rw [hsub, hadd]
+      2 * (sin (a * t) * sin (b * t)) = 2 * sin (a * t) * sin (b * t) := by ring
+      _ = cos (a * t - b * t) - cos (a * t + b * t) := by rw [two_mul_sin_mul_sin]
+      _ = cos (((a : ℝ) - (b : ℝ)) * t) - cos (((a : ℝ) + (b : ℝ)) * t) := by
+        rw [hsub, hadd]
   by_cases heq : a = b
   · by_cases ha0 : a = 0
     · -- a = b = 0 : integrand is 0, integral is 0, RHS = 0
       have hb0 : b = 0 := by rw [← heq]; exact ha0
       simp [heq, ha0, hb0, zero_mul, sin_zero]
-    · -- a = b >= 1
+    · -- a = b >= 1 : ∫ sin(a t)^2 = pi/2
       let m2 : ℤ := 2 * (a : ℤ)
       have hI : ∫ t in (-π / 2)..(π / 2), sin (a * t) * sin (b * t) = π / 2 := by
         have hEq : ∀ t, 2 * (sin (a * t) * sin (b * t)) = 1 - cos (m2 * t) := by
           intro t
           rw [hId]
-          have hk0 : (k : ℝ) = 0 := by simp [k, heq]
-          have hl : (l : ℝ) = (m2 : ℝ) := by simp [l, heq, m2]
-          rw [hk0, hl, zero_mul, cos_zero]
+          have hd : ((a : ℝ) - (b : ℝ)) = (0 : ℝ) := by rw [heq]; ring
+          have hs : ((a : ℝ) + (b : ℝ)) = (m2 : ℝ) := by
+            have hmb : (m2 : ℝ) = (2 * a : ℝ) := by
+              have : (m2 : ℤ) = 2 * (a : ℤ) := by simp [m2]
+              rw [this]
+              norm_cast
+            rw [hmb, heq]
+            ring
+          rw [show cos (((a : ℝ) - (b : ℝ)) * t) = cos (0 * t) by rw [hd],
+            show cos (((a : ℝ) + (b : ℝ)) * t) = cos (m2 * t) by rw [hs]]
+          simp [zero_mul, cos_zero]
         have h2 : ∫ t in (-π / 2)..(π / 2), 2 * (sin (a * t) * sin (b * t)) =
             ∫ t in (-π / 2)..(π / 2), 1 - cos (m2 * t) := by
           rw [intervalIntegral.integral_congr (fun t _ => hEq t)]
@@ -261,7 +274,9 @@ lemma integral_sin_sin (a b : ℕ) (ha : Even a) (hb : Even b) :
           exact ha0 ‹a = 0›
         have h4 : ∫ t in (-π / 2)..(π / 2), cos (m2 * t) = 0 :=
           integral_cos_even m2 hNonz hEven
-        have h5 : ∫ t in (-π / 2)..(π / 2), 1 = π := integral_const_pi
+        have h5 : ∫ t in (-π / 2)..(π / 2), 1 = π := by
+          simp
+          ring
         have h2s : ∫ t in (-π / 2)..(π / 2), 2 * (sin (a * t) * sin (b * t)) = π := by
           rw [h2, h3, h5, h4]
           ring
@@ -269,30 +284,23 @@ lemma integral_sin_sin (a b : ℕ) (ha : Even a) (hb : Even b) :
             2 * (∫ t in (-π / 2)..(π / 2), sin (a * t) * sin (b * t)) := by
           rw [intervalIntegral.integral_const_mul]
         nlinarith [hmul, h2s]
-      simp [hI, heq]
-  · have hsubn : k ≠ 0 := by
+      have hbne : b ≠ 0 := by simpa [heq] using ha0
+      simp [hI, heq, hbne]
+  · -- a ≠ b : both frequencies (a-b), (a+b) are nonzero even -> both integrals 0
+    have hsubn : k ≠ 0 := by
       intro h
-      have : (a : ℤ) = (b : ℤ) := by
-        rw [show k = (a : ℤ) - (b : ℤ) by simp [k], h]
-        simp
-      exact heq (by exact_mod_cast ‹(a : ℤ) = (b : ℤ)›)
+      have hkn : (a : ℤ) - (b : ℤ) = 0 := by simpa [k] using h
+      have : (a : ℤ) = (b : ℤ) := by linarith
+      exact heq (by exact_mod_cast this)
     have hsumn : l ≠ 0 := by
       intro h
-      have hsum : (a : ℤ) + (b : ℤ) = 0 := by
-        rw [show l = (a : ℤ) + (b : ℤ) by simp [l], h]
-      have ha0z : (a : ℤ) = 0 := by
-        have : (a : ℤ) ≥ 0 := by exact_mod_cast
-        have : (a : ℤ) ≤ 0 := by
-          have : (b : ℤ) ≥ 0 := by exact_mod_cast
-          nlinarith
-        nlinarith
-      have hb0z : (b : ℤ) = 0 := by
-        have : (b : ℤ) ≥ 0 := by exact_mod_cast
-        have : (b : ℤ) ≤ 0 := by
-          have : (a : ℤ) ≥ 0 := by exact_mod_cast
-          nlinarith
-        nlinarith
-      exact heq (by exact_mod_cast (by rw [ha0z, hb0z]; simp))
+      have hln : (a : ℤ) + (b : ℤ) = 0 := by simpa [l] using h
+      have hae : (a : ℤ) ≥ 0 := by exact_mod_cast
+      have hbe : (b : ℤ) ≥ 0 := by exact_mod_cast
+      have ha0z : (a : ℤ) = 0 := by nlinarith
+      have hb0z : (b : ℤ) = 0 := by nlinarith
+      have : (a : ℤ) = (b : ℤ) := by simpa [ha0z, hb0z]
+      exact heq (by exact_mod_cast this)
     have hsubE : Even k := by
       rcases ha with ⟨x, rfl⟩
       rcases hb with ⟨y, rfl⟩
@@ -305,10 +313,25 @@ lemma integral_sin_sin (a b : ℕ) (ha : Even a) (hb : Even b) :
       use (x + y : ℤ)
       norm_cast
       ring
-    have h0 : ∫ t in (-π / 2)..(π / 2), cos (k * t) = 0 := integral_cos_even k hsubn hsubE
-    have h1 : ∫ t in (-π / 2)..(π / 2), cos (l * t) = 0 := integral_cos_even l hsumn hsumE
+    have h0 : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) - (b : ℝ)) * t) = 0 := by
+      have hd : ((a : ℝ) - (b : ℝ)) = (k : ℝ) := by simp [Int.cast_sub]
+      have hcong : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) - (b : ℝ)) * t) =
+          ∫ t in (-π / 2)..(π / 2), cos (k * t) := by
+        apply intervalIntegral.integral_congr
+        intro t _
+        rw [show ((a : ℝ) - (b : ℝ)) * t = (k : ℝ) * t by rw [hd]]
+      rw [hcong, integral_cos_even k hsubn hsubE]
+    have h1 : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) + (b : ℝ)) * t) = 0 := by
+      have hl : ((a : ℝ) + (b : ℝ)) = (l : ℝ) := by simp [Int.cast_add]
+      have hcong : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) + (b : ℝ)) * t) =
+          ∫ t in (-π / 2)..(π / 2), cos (l * t) := by
+        apply intervalIntegral.integral_congr
+        intro t _
+        rw [show ((a : ℝ) + (b : ℝ)) * t = (l : ℝ) * t by rw [hl]]
+      rw [hcong, integral_cos_even l hsumn hsumE]
     have h2 : ∫ t in (-π / 2)..(π / 2), 2 * (sin (a * t) * sin (b * t)) =
-        (∫ t in (-π / 2)..(π / 2), cos (k * t)) - (∫ t in (-π / 2)..(π / 2), cos (l * t)) := by
+        (∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) - (b : ℝ)) * t)) -
+        (∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) + (b : ℝ)) * t)) := by
       rw [intervalIntegral.integral_congr (fun t _ => hId t)]
       rw [intervalIntegral.integral_sub] <;> exact fun_prop
     have h2s : ∫ t in (-π / 2)..(π / 2), 2 * (sin (a * t) * sin (b * t)) = 0 := by
@@ -327,34 +350,45 @@ lemma integral_sin_cos (a b : ℕ) (ha : Even a) (hb : Even b) :
     ∫ t in (-π / 2)..(π / 2), sin (a * t) * cos (b * t) = 0 := by
   let k : ℤ := (a : ℤ) - (b : ℤ)
   let l : ℤ := (a : ℤ) + (b : ℤ)
-  have hId : ∀ t, 2 * (sin (a * t) * cos (b * t)) = sin (k * t) + sin (l * t) := by
+  have hId : ∀ t, 2 * (sin (a * t) * cos (b * t)) =
+      sin (((a : ℝ) - (b : ℝ)) * t) + sin (((a : ℝ) + (b : ℝ)) * t) := by
     intro t
-    have hkR : (k : ℝ) = (a : ℝ) - (b : ℝ) := by simp [k]
-    have hlR : (l : ℝ) = (a : ℝ) + (b : ℝ) := by simp [l]
-    have hsub : (a : ℝ) * t - (b : ℝ) * t = (k : ℝ) * t := by
-      rw [hkR]; ring
-    have hadd : (a : ℝ) * t + (b : ℝ) * t = (l : ℝ) * t := by
-      rw [hlR]; ring
+    have hsub : (a : ℝ) * t - (b : ℝ) * t = ((a : ℝ) - (b : ℝ)) * t := by ring
+    have hadd : (a : ℝ) * t + (b : ℝ) * t = ((a : ℝ) + (b : ℝ)) * t := by ring
     calc
-      2 * (sin (a * t) * cos (b * t))
-        = 2 * sin (a * t) * cos (b * t) := by ring
-      _ = sin (a * t - b * t) + sin (a * t + b * t) := by
-        rw [two_mul_sin_mul_cos]
-      _ = sin (k * t) + sin (l * t) := by rw [hsub, hadd]
-  have h0 : ∫ t in (-π / 2)..(π / 2), sin (k * t) = 0 := by
+      2 * (sin (a * t) * cos (b * t)) = 2 * sin (a * t) * cos (b * t) := by ring
+      _ = sin (a * t - b * t) + sin (a * t + b * t) := by rw [two_mul_sin_mul_cos]
+      _ = sin (((a : ℝ) - (b : ℝ)) * t) + sin (((a : ℝ) + (b : ℝ)) * t) := by
+        rw [hsub, hadd]
+  have hk0 : ∫ t in (-π / 2)..(π / 2), sin (((a : ℝ) - (b : ℝ)) * t) = 0 := by
+    have hd : ((a : ℝ) - (b : ℝ)) = (k : ℝ) := by simp [Int.cast_sub]
+    have hcong : ∫ t in (-π / 2)..(π / 2), sin (((a : ℝ) - (b : ℝ)) * t) =
+        ∫ t in (-π / 2)..(π / 2), sin (k * t) := by
+      apply intervalIntegral.integral_congr
+      intro t _
+      rw [show ((a : ℝ) - (b : ℝ)) * t = (k : ℝ) * t by rw [hd]]
+    rw [hcong]
     by_cases hkn : k ≠ 0
     · exact integral_sin_even k hkn
     · simp [hkn]
-  have h1 : ∫ t in (-π / 2)..(π / 2), sin (l * t) = 0 := by
+  have hl0 : ∫ t in (-π / 2)..(π / 2), sin (((a : ℝ) + (b : ℝ)) * t) = 0 := by
+    have hl : ((a : ℝ) + (b : ℝ)) = (l : ℝ) := by simp [Int.cast_add]
+    have hcong : ∫ t in (-π / 2)..(π / 2), sin (((a : ℝ) + (b : ℝ)) * t) =
+        ∫ t in (-π / 2)..(π / 2), sin (l * t) := by
+      apply intervalIntegral.integral_congr
+      intro t _
+      rw [show ((a : ℝ) + (b : ℝ)) * t = (l : ℝ) * t by rw [hl]]
+    rw [hcong]
     by_cases hln : l ≠ 0
     · exact integral_sin_even l hln
     · simp [hln]
   have h2 : ∫ t in (-π / 2)..(π / 2), 2 * (sin (a * t) * cos (b * t)) =
-      (∫ t in (-π / 2)..(π / 2), sin (k * t)) + (∫ t in (-π / 2)..(π / 2), sin (l * t)) := by
+      (∫ t in (-π / 2)..(π / 2), sin (((a : ℝ) - (b : ℝ)) * t)) +
+      (∫ t in (-π / 2)..(π / 2), sin (((a : ℝ) + (b : ℝ)) * t)) := by
     rw [intervalIntegral.integral_congr (fun t _ => hId t)]
     rw [intervalIntegral.integral_add] <;> exact fun_prop
   have h2s : ∫ t in (-π / 2)..(π / 2), 2 * (sin (a * t) * cos (b * t)) = 0 := by
-    rw [h2, h0, h1]
+    rw [h2, hk0, hl0]
     ring
   have hmul : ∫ t in (-π / 2)..(π / 2), 2 * (sin (a * t) * cos (b * t)) =
       2 * (∫ t in (-π / 2)..(π / 2), sin (a * t) * cos (b * t)) := by
