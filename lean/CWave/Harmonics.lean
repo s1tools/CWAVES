@@ -138,7 +138,7 @@ lemma integral_cos_cos (a b : ℕ) (ha : Even a) (hb : Even b) :
           rw [intervalIntegral.integral_congr (fun t _ => hEq t)]
         have h3 : ∫ t in (-π / 2)..(π / 2), 1 + cos (m2 * t) =
             (∫ t in (-π / 2)..(π / 2), 1) + (∫ t in (-π / 2)..(π / 2), cos (m2 * t)) := by
-          rw [intervalIntegral.integral_add] <;> exact fun_prop
+          rw [intervalIntegral.integral_add] <;> (apply Continuous.intervalIntegrable; fun_prop)
         have hEven : Even m2 := by
           use (a : ℤ)
           ring
@@ -160,33 +160,37 @@ lemma integral_cos_cos (a b : ℕ) (ha : Even a) (hb : Even b) :
           rw [intervalIntegral.integral_const_mul]
         nlinarith [hmul, h2s]
       have hbne : b ≠ 0 := by simpa [heq] using ha0
-      simp [hI, heq, hbne]
+      simpa [heq, hbne] using hI
   · -- a ≠ b : both frequencies (a-b), (a+b) are nonzero even -> both integrals 0
     have hsubn : k ≠ 0 := by
       intro h
       have hkn : (a : ℤ) - (b : ℤ) = 0 := by simpa [k] using h
       have : (a : ℤ) = (b : ℤ) := by linarith
-      exact heq (by exact_mod_cast this)
+      exact heq (by simpa [Int.natCast_inj] using this)
     have hsumn : l ≠ 0 := by
       intro h
       have hln : (a : ℤ) + (b : ℤ) = 0 := by simpa [l] using h
-      have hae : (a : ℤ) ≥ 0 := by exact_mod_cast
-      have hbe : (b : ℤ) ≥ 0 := by exact_mod_cast
-      have ha0z : (a : ℤ) = 0 := by nlinarith
-      have hb0z : (b : ℤ) = 0 := by nlinarith
+      have hae : (a : ℤ) ≥ 0 := by positivity
+      have hbe : (b : ℤ) ≥ 0 := by positivity
+      have ha0z : (a : ℤ) = 0 := by linarith
+      have hb0z : (b : ℤ) = 0 := by linarith
       have : (a : ℤ) = (b : ℤ) := by simpa [ha0z, hb0z]
-      exact heq (by exact_mod_cast this)
+      exact heq (by simpa [Int.natCast_inj] using this)
     have hsubE : Even k := by
       rcases ha with ⟨x, rfl⟩
       rcases hb with ⟨y, rfl⟩
+      dsimp only [k]
+      rw [show (↑(x + x) : ℤ) = 2 * (x : ℤ) by norm_cast; ring,
+          show (↑(y + y) : ℤ) = 2 * (y : ℤ) by norm_cast; ring]
       use (x - y : ℤ)
-      norm_cast
       ring
     have hsumE : Even l := by
       rcases ha with ⟨x, rfl⟩
       rcases hb with ⟨y, rfl⟩
+      dsimp only [l]
+      rw [show (↑(x + x) : ℤ) = 2 * (x : ℤ) by norm_cast; ring,
+          show (↑(y + y) : ℤ) = 2 * (y : ℤ) by norm_cast; ring]
       use (x + y : ℤ)
-      norm_cast
       ring
     have h0 : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) - (b : ℝ)) * t) = 0 := by
       have hd : ((a : ℝ) - (b : ℝ)) = (k : ℝ) := by simp [Int.cast_sub]
@@ -208,7 +212,7 @@ lemma integral_cos_cos (a b : ℕ) (ha : Even a) (hb : Even b) :
         (∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) - (b : ℝ)) * t)) +
         (∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) + (b : ℝ)) * t)) := by
       rw [intervalIntegral.integral_congr (fun t _ => hId t)]
-      rw [intervalIntegral.integral_add] <;> exact fun_prop
+      rw [intervalIntegral.integral_add] <;> (apply Continuous.intervalIntegrable; fun_prop)
     have h2s : ∫ t in (-π / 2)..(π / 2), 2 * (cos (a * t) * cos (b * t)) = 0 := by
       rw [h2, h0, h1]
       ring
@@ -263,7 +267,7 @@ lemma integral_sin_sin (a b : ℕ) (ha : Even a) (hb : Even b) :
           rw [intervalIntegral.integral_congr (fun t _ => hEq t)]
         have h3 : ∫ t in (-π / 2)..(π / 2), 1 - cos (m2 * t) =
             (∫ t in (-π / 2)..(π / 2), 1) - (∫ t in (-π / 2)..(π / 2), cos (m2 * t)) := by
-          rw [intervalIntegral.integral_sub] <;> exact fun_prop
+          rw [intervalIntegral.integral_sub] <;> (apply Continuous.intervalIntegrable; fun_prop)
         have hEven : Even m2 := by
           use (a : ℤ)
           ring
@@ -285,33 +289,37 @@ lemma integral_sin_sin (a b : ℕ) (ha : Even a) (hb : Even b) :
           rw [intervalIntegral.integral_const_mul]
         nlinarith [hmul, h2s]
       have hbne : b ≠ 0 := by simpa [heq] using ha0
-      simp [hI, heq, hbne]
+      simpa [heq, hbne] using hI
   · -- a ≠ b : both frequencies (a-b), (a+b) are nonzero even -> both integrals 0
     have hsubn : k ≠ 0 := by
       intro h
       have hkn : (a : ℤ) - (b : ℤ) = 0 := by simpa [k] using h
       have : (a : ℤ) = (b : ℤ) := by linarith
-      exact heq (by exact_mod_cast this)
+      exact heq (by simpa [Int.natCast_inj] using this)
     have hsumn : l ≠ 0 := by
       intro h
       have hln : (a : ℤ) + (b : ℤ) = 0 := by simpa [l] using h
-      have hae : (a : ℤ) ≥ 0 := by exact_mod_cast
-      have hbe : (b : ℤ) ≥ 0 := by exact_mod_cast
-      have ha0z : (a : ℤ) = 0 := by nlinarith
-      have hb0z : (b : ℤ) = 0 := by nlinarith
+      have hae : (a : ℤ) ≥ 0 := by positivity
+      have hbe : (b : ℤ) ≥ 0 := by positivity
+      have ha0z : (a : ℤ) = 0 := by linarith
+      have hb0z : (b : ℤ) = 0 := by linarith
       have : (a : ℤ) = (b : ℤ) := by simpa [ha0z, hb0z]
-      exact heq (by exact_mod_cast this)
+      exact heq (by simpa [Int.natCast_inj] using this)
     have hsubE : Even k := by
       rcases ha with ⟨x, rfl⟩
       rcases hb with ⟨y, rfl⟩
+      dsimp only [k]
+      rw [show (↑(x + x) : ℤ) = 2 * (x : ℤ) by norm_cast; ring,
+          show (↑(y + y) : ℤ) = 2 * (y : ℤ) by norm_cast; ring]
       use (x - y : ℤ)
-      norm_cast
       ring
     have hsumE : Even l := by
       rcases ha with ⟨x, rfl⟩
       rcases hb with ⟨y, rfl⟩
+      dsimp only [l]
+      rw [show (↑(x + x) : ℤ) = 2 * (x : ℤ) by norm_cast; ring,
+          show (↑(y + y) : ℤ) = 2 * (y : ℤ) by norm_cast; ring]
       use (x + y : ℤ)
-      norm_cast
       ring
     have h0 : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) - (b : ℝ)) * t) = 0 := by
       have hd : ((a : ℝ) - (b : ℝ)) = (k : ℝ) := by simp [Int.cast_sub]
@@ -333,7 +341,7 @@ lemma integral_sin_sin (a b : ℕ) (ha : Even a) (hb : Even b) :
         (∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) - (b : ℝ)) * t)) -
         (∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) + (b : ℝ)) * t)) := by
       rw [intervalIntegral.integral_congr (fun t _ => hId t)]
-      rw [intervalIntegral.integral_sub] <;> exact fun_prop
+      rw [intervalIntegral.integral_sub] <;> (apply Continuous.intervalIntegrable; fun_prop)
     have h2s : ∫ t in (-π / 2)..(π / 2), 2 * (sin (a * t) * sin (b * t)) = 0 := by
       rw [h2, h0, h1]
       ring
@@ -386,7 +394,7 @@ lemma integral_sin_cos (a b : ℕ) (ha : Even a) (hb : Even b) :
       (∫ t in (-π / 2)..(π / 2), sin (((a : ℝ) - (b : ℝ)) * t)) +
       (∫ t in (-π / 2)..(π / 2), sin (((a : ℝ) + (b : ℝ)) * t)) := by
     rw [intervalIntegral.integral_congr (fun t _ => hId t)]
-    rw [intervalIntegral.integral_add] <;> exact fun_prop
+    rw [intervalIntegral.integral_add] <;> (apply Continuous.intervalIntegrable; fun_prop)
   have h2s : ∫ t in (-π / 2)..(π / 2), 2 * (sin (a * t) * cos (b * t)) = 0 := by
     rw [h2, hk0, hl0]
     ring
@@ -438,7 +446,7 @@ lemma integral_F_zero (n : ℕ) (hn : 1 < n) :
     have hEven : Even ((n - 1 : ℕ)) := by
       rcases hodd with ⟨k, rfl⟩
       use k
-      ring
+      omega
     rw [F_odd n hodd (by omega)]
     rw [intervalIntegral.integral_const_mul]
     exact (integral_cos_even (n - 1) (by simpa using hnm1) hEven).symm
@@ -454,11 +462,22 @@ theorem angular_orthonormal (m n : ℕ) (hm : 1 ≤ m) (hn : 1 ≤ n) :
         have hInt : ∀ t, F m t * F n t = 1 / Real.pi := by
           intro t
           simp [hm1, hn1, F_one]
-          field_simp [Real.sq_sqrt (by positivity : 0 ≤ Real.pi)]
-        rw [intervalIntegral.integral_congr (fun t _ => hInt t),
-          intervalIntegral.integral_const]
-        norm_num
-      simp [hm1, hn1, h]
+          have hsq : (Real.sqrt Real.pi) ^ 2 = Real.pi := by
+            rw [Real.sq_sqrt (by positivity : 0 ≤ Real.pi)]
+          field_simp [hsq]
+          nlinarith [hsq]
+        rw [intervalIntegral.integral_congr (fun t _ => hInt t)]
+        have hConst : (∫ t in (-π / 2)..(π / 2), (1 / Real.pi)) =
+            (1 / Real.pi) * (∫ t in (-π / 2)..(π / 2), 1) := by
+          rw [show (∫ t in (-π / 2)..(π / 2), (1 / Real.pi)) =
+              (∫ t in (-π / 2)..(π / 2), (1 / Real.pi) * 1) by
+                apply intervalIntegral.integral_congr
+                intro t _
+                ring,
+            intervalIntegral.integral_const_mul]
+        rw [hConst, integral_const_pi]
+        field_simp
+      simpa [hm1, hn1] using h
     · -- m = 1, n ≠ 1
       have hComm : (∫ t in (-π / 2)..(π / 2), F m t * F n t) =
           (∫ t in (-π / 2)..(π / 2), F n t * (1 / Real.sqrt Real.pi)) := by
@@ -552,7 +571,7 @@ theorem angular_orthonormal (m n : ℕ) (hm : 1 ≤ m) (hn : 1 ≤ n) :
           have hnm1E : Even ((n - 1 : ℕ)) := by
             rcases hodd with ⟨k, rfl⟩
             use k
-            ring
+            omega
           have hI : ∫ t in (-π / 2)..(π / 2),
               Real.sin (m * t) * Real.cos ((n - 1) * t) = 0 := by
             simpa using integral_sin_cos m (n - 1) hmE hnm1E
@@ -592,7 +611,7 @@ theorem angular_orthonormal (m n : ℕ) (hm : 1 ≤ m) (hn : 1 ≤ n) :
         have hnm1E : Even ((m - 1 : ℕ)) := by
           rcases hodd with ⟨k, rfl⟩
           use k
-          ring
+          omega
         have hI : ∫ t in (-π / 2)..(π / 2),
             Real.cos ((m - 1) * t) * Real.sin (n * t) = 0 := by
           have h : ∫ t in (-π / 2)..(π / 2),
@@ -627,7 +646,7 @@ theorem angular_orthonormal (m n : ℕ) (hm : 1 ≤ m) (hn : 1 ≤ n) :
             have hnm1E : Even ((m - 1 : ℕ)) := by
               rcases hodd with ⟨k, rfl⟩
               use k
-              ring
+              omega
             rw [integral_cos_even (m - 1) (by simpa using hnm1) hnm1E]
             ring
           have hne : m ≠ n := by
@@ -662,11 +681,11 @@ theorem angular_orthonormal (m n : ℕ) (hm : 1 ≤ m) (hn : 1 ≤ n) :
           have hnm1E : Even ((m - 1 : ℕ)) := by
             rcases hoddm with ⟨k, rfl⟩
             use k
-            ring
+            omega
           have hnn1E : Even ((n - 1 : ℕ)) := by
             rcases hoddn with ⟨k, rfl⟩
             use k
-            ring
+            omega
           by_cases heq : m = n
           · have hI : ∫ t in (-π / 2)..(π / 2),
               Real.cos ((m - 1) * t) * Real.cos ((n - 1) * t) = Real.pi / 2 := by
