@@ -11,6 +11,8 @@ public import Mathlib.Analysis.SpecialFunctions.Log.Basic
 ...
 -/
 namespace CWave
+@[expose] public section
+
 noncomputable def Gegenbauer (n : ℕ) (x : ℝ) : ℝ :=
   match n with
   | 0 => 1
@@ -34,4 +36,5 @@ noncomputable def tmp (kmin kmax : ℝ) (kx ky : ℝ) : ℝ :=
 noncomputable def eta (kmin kmax : ℝ) (kx ky : ℝ) : ℝ :=
   Real.sqrt (2 * (2 * a1 kmin kmax * ky^4 + a2 kmin kmax * ky^2 + kx^2) /
       ((kx^2 + ky^2) * tmp kmin kmax kx ky * Real.log (kmax / kmin)))
+end
 end CWave
