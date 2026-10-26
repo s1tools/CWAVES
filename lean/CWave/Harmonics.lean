@@ -193,7 +193,7 @@ lemma integral_cos_cos (a b : ℕ) (ha : Even a) (hb : Even b) :
       use (x + y : ℤ)
       ring
     have h0 : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) - (b : ℝ)) * t) = 0 := by
-      have hd : ((a : ℝ) - (b : ℝ)) = (k : ℝ) := by simp [Int.cast_sub]
+      have hd : ((a : ℝ) - (b : ℝ)) = (k : ℝ) := by dsimp only [k]; simp [Int.cast_sub]
       have hcong : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) - (b : ℝ)) * t) =
           ∫ t in (-π / 2)..(π / 2), cos (k * t) := by
         apply intervalIntegral.integral_congr
@@ -201,7 +201,7 @@ lemma integral_cos_cos (a b : ℕ) (ha : Even a) (hb : Even b) :
         rw [show ((a : ℝ) - (b : ℝ)) * t = (k : ℝ) * t by rw [hd]]
       rw [hcong, integral_cos_even k hsubn hsubE]
     have h1 : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) + (b : ℝ)) * t) = 0 := by
-      have hl : ((a : ℝ) + (b : ℝ)) = (l : ℝ) := by simp [Int.cast_add]
+      have hl : ((a : ℝ) + (b : ℝ)) = (l : ℝ) := by dsimp only [l]; simp [Int.cast_add]
       have hcong : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) + (b : ℝ)) * t) =
           ∫ t in (-π / 2)..(π / 2), cos (l * t) := by
         apply intervalIntegral.integral_congr
@@ -322,7 +322,7 @@ lemma integral_sin_sin (a b : ℕ) (ha : Even a) (hb : Even b) :
       use (x + y : ℤ)
       ring
     have h0 : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) - (b : ℝ)) * t) = 0 := by
-      have hd : ((a : ℝ) - (b : ℝ)) = (k : ℝ) := by simp [Int.cast_sub]
+      have hd : ((a : ℝ) - (b : ℝ)) = (k : ℝ) := by dsimp only [k]; simp [Int.cast_sub]
       have hcong : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) - (b : ℝ)) * t) =
           ∫ t in (-π / 2)..(π / 2), cos (k * t) := by
         apply intervalIntegral.integral_congr
@@ -330,7 +330,7 @@ lemma integral_sin_sin (a b : ℕ) (ha : Even a) (hb : Even b) :
         rw [show ((a : ℝ) - (b : ℝ)) * t = (k : ℝ) * t by rw [hd]]
       rw [hcong, integral_cos_even k hsubn hsubE]
     have h1 : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) + (b : ℝ)) * t) = 0 := by
-      have hl : ((a : ℝ) + (b : ℝ)) = (l : ℝ) := by simp [Int.cast_add]
+      have hl : ((a : ℝ) + (b : ℝ)) = (l : ℝ) := by dsimp only [l]; simp [Int.cast_add]
       have hcong : ∫ t in (-π / 2)..(π / 2), cos (((a : ℝ) + (b : ℝ)) * t) =
           ∫ t in (-π / 2)..(π / 2), cos (l * t) := by
         apply intervalIntegral.integral_congr
