@@ -10,9 +10,15 @@ This produces, in ``docs/figures/`` :
   showing the elliptic domain ``A`` and the ``kx = range`` / ``ky = azimuth``
   convention (see :mod:`cwaves.scripts.plot_kernels`).
 * ``kernels_grid.png``               -- the full kernel basis (Nk x Nphi panels).
-* ``certification_crossspec_kernels.png`` -- a real ESA OCN WV Sentinel-1 cartesian
-  cross-spectrum (``oswCartSpecRe``, one tile) with the CWAVE kernel contours
-  overlaid, to certify that the kernel basis matches the spectral structure.
+* ``certification_ocn_polar.png`` / ``certification_ocn_sinh.png`` /
+  ``certification_xsp.png`` -- one figure per decode method, for the same S1A
+  WV1 acquisition (2025-05-01, orbit 058996_075117) : the modulus ``|X_S|``,
+  the same spectrum with the CWAVE kernel contours overlaid, and the pointwise
+  integrand ``kernel x |X_S|_norm x dk`` (the intermediate step summed to
+  produce the CWAVE parameter). All panels share the CWAVE display domain
+  ``k_rg in [0, kmax]``, ``k_az in [-kmax, kmax]`` (black = zero spectrum).
+* the SAR ``sigma0`` roughness image (``...-roughness.png``) is provided
+  separately (not generated here) and is documented on the certification page.
 * ``cwave_map_k1_phi1.png``          -- the georeferenced CWAVE map (k_gp=1,
   phi_hf=1) produced by the task-10 script :mod:`cwaves.scripts.iw_cwaves_map`.
 
@@ -36,12 +42,13 @@ import xarray as xr  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from cwaves.client import _l1b_cross_spectrum, polar_to_cartesian  # noqa: E402
 from cwaves.compute_cwaves import compute_kernel  # noqa: E402
 from cwaves.config import get_default_config  # noqa: E402
+from cwaves.ocn_sinh import compute_ocn_sinh_cartesian  # noqa: E402
 from cwaves.scripts.iw_cwaves_map import (  # noqa: E402
     compute_ocn_subswath,
     plot_map,
-    resample_sinh_to_regular,
 )
 from cwaves.scripts.plot_kernels import (  # noqa: E402
     _apply_style,
@@ -51,8 +58,13 @@ from cwaves.scripts.plot_kernels import (  # noqa: E402
 
 FIG_DIR = Path(__file__).resolve().parent / "figures"
 
-#: path of the ESA OCN WV IW osw fixture shipped in ``assets/``
+#: path of the ESA OCN WV IW osw fixture shipped in ``assets/`` (task-10 map)
 OCN_IW1_NC = REPO_ROOT / "assets" / "s1d-iw1-osw-vv-fixture.nc"
+
+#: real OCN WV + SARWAVE XSP L1B fixtures, from the SAME S1A WV1 acquisition
+#: (2025-05-01, orbit 058996_075117) so the certification rows share a scene.
+OCN_WV_NC = REPO_ROOT / "assets" / "s1a-wv1-ocn-vv-20250501t060101-058996-075117-001.nc"
+XSP_NC = REPO_ROOT / "assets" / "s1a_wv1_xsp_20250501t060101_058996_075117_dd24_a24.nc"
 
 
 def kmin(wlmax: float, wlmin: float) -> float:
@@ -102,85 +114,168 @@ def _gen_kernels() -> None:
     )
 
 
-def _gen_certification() -> None:
-    """Overlay the CWAVE kernels on a real OCN cartesian cross-spectrum."""
-    cfg = get_default_config()["cwave"]
-    wlmax, wlmin = cfg["cwave_wlmax"], cfg["cwave_wlmin"]
-    n_k, n_phi = cfg["cwave_Nk"], cfg["cwave_Nphi"]
-    kmax = 2.0 * np.pi / wlmin
-    n_grid = 128
+def _row_arrays(
+    xs: xr.DataArray, kmin_: float, kmax: float, n_k: int, n_phi: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """Compute the three panel arrays (spec, kernel, integrand) for one spectrum.
 
-    # one real tile of the OCN IW measurement (cartesian cross-spectrum, sinh grid)
-    with xr.open_dataset(OCN_IW1_NC, group="intraburst") as ds:
-        kx = 2.0 * np.pi * ds["oswKx"].isel(oswAzSize=0, oswRaSize=0).values
-        ky = 2.0 * np.pi * ds["oswKy"].isel(oswAzSize=0, oswRaSize=0).values
-        spec = ds["oswCartSpecRe"].isel(oswAzSize=0, oswRaSize=0, oswLag=2) + 1j * ds[
-            "oswCartSpecIm"
-        ].isel(oswAzSize=0, oswRaSize=0, oswLag=2)
-    # resample |spec| onto the regular (one-sided range, two-sided azimuth) grid
-    xs = resample_sinh_to_regular(spec, kx, ky, kmax, n_grid)
+    The integrand is exactly the pointwise product summed by
+    :func:`cwaves.compute_cwave_parameters` :
+    ``kernel * |xs|_normalized * dk_rg * dk_az``.
 
-    # the kernel on the same regular grid
-    krg_grid, kaz_grid = np.meshgrid(xs.k_rg.values, xs.k_az.values, indexing="ij")
-    krg = xr.DataArray(krg_grid, dims=("freq_sample", "freq_line"))
-    kaz = xr.DataArray(kaz_grid, dims=("freq_sample", "freq_line"))
+    Args:
+        xs: the one-sided (``k_rg >= 0``) complex cross-spectrum, dims
+            ``(freq_sample, freq_line)``.
+        kmin_: minimum wavenumber (rad/m).
+        kmax: maximum wavenumber (rad/m).
+        n_k: number of Gegenbauer basis functions.
+        n_phi: number of harmonic basis functions.
+
+    Returns:
+        A tuple ``(k_rg_1d, k_az_1d, spec_2d, kernel_2d, integrand_2d, cwave_val)``
+        with the 2-D arrays oriented for plotting (rows = azimuth, cols = range).
+    """
+    xs = xs.transpose("freq_sample", "freq_line")
+    k_rg_1d = np.asarray(xs.k_rg, dtype=float)
+    k_az_1d = np.asarray(xs.k_az, dtype=float)
+    spec = (xs.real**2 + xs.imag**2) ** 0.5
     kernel = compute_kernel(
-        krg=krg,
-        kaz=kaz,
-        kmin=kmin(wlmax, wlmin),
+        krg=xs.k_rg,
+        kaz=xs.k_az,
+        kmin=kmin_,
         kmax=kmax,
         cwave_Nk=n_k,
         cwave_Nphi=n_phi,
     )
+    k1 = kernel["cwave_kernel"].sel(k_gp=1, phi_hf=1)
+    kk = (xs.k_rg**2 + xs.k_az**2) ** 0.5
+    xxs = xs.where((kk > kmin_) & (kk < kmax))
+    xxsm = (xxs.real**2 + xxs.imag**2) ** 0.5
+    dkrg = float(xxs.k_rg.diff(dim="freq_sample").mean(dim="freq_sample"))
+    dkaz = float(xxs.k_az.diff(dim="freq_line").mean(dim="freq_line"))
+    xxsmn = xxsm / (
+        xxsm.sum(dim=["freq_line", "freq_sample"], skipna=True) * dkrg * dkaz
+    )
+    integrand = (k1 * xxsmn) * dkrg * dkaz
+    cwave_val = float(
+        integrand.sum(dim=["freq_sample", "freq_line"], skipna=True, min_count=1)
+    )
+    return (
+        k_rg_1d,
+        k_az_1d,
+        spec.transpose("freq_line", "freq_sample").values,
+        k1.transpose("freq_line", "freq_sample").values,
+        integrand.transpose("freq_line", "freq_sample").values,
+        cwave_val,
+    )
 
-    _apply_style()
-    fig, axes = plt.subplots(1, 2, figsize=(11.5, 5.6), constrained_layout=True)
 
-    spec_2d = np.abs(xs.values).T  # (rows=azimuth, cols=range)
-    k_rg_1d = xs.k_rg.values
-    k_az_1d = xs.k_az.values
+def _plot_method(
+    fig,
+    axes,
+    k_rg_1d,
+    k_az_1d,
+    spec_2d,
+    kernel_2d,
+    integrand_2d,
+    cwave_val,
+    kmax_display,
+    title,
+):
+    """Render the three panels of one decode method on a common display domain.
 
-    # (a) the real cartesian cross-spectrum, masked to the domain A
+    All panels share the CWAVE display domain ``[0, kmax_display] x
+    [-kmax_display, kmax_display]`` on a **black** background, so the part of the
+    domain outside a method's wavenumber support reads as a zero spectrum and
+    every panel has the same size.
+    """
     pcm = axes[0].pcolormesh(k_rg_1d, k_az_1d, spec_2d, cmap="inferno", shading="auto")
-    axes[0].set_title("Cartesian cross-spectrum  $|X_S|$  (ESA OCN WV, iw1)")
+    axes[0].set_title(r"cross-spectrum  $|X_S|$")
     fig.colorbar(pcm, ax=axes[0], label=r"$|X_S|$  (a.u.)")
 
-    # (b) the same cross-spectrum with the CWAVE kernel contours overlaid
     pcm = axes[1].pcolormesh(
         k_rg_1d, k_az_1d, spec_2d, cmap="inferno", shading="auto", alpha=0.85
     )
-    k1 = kernel["cwave_kernel"].sel(k_gp=1, phi_hf=1).values  # (freq_sample, freq_line)
     cs = axes[1].contour(
-        k_rg_1d, k_az_1d, k1.T, levels=24, colors="cyan", linewidths=1.0
+        k_rg_1d, k_az_1d, kernel_2d, levels=24, colors="cyan", linewidths=1.0
     )
     axes[1].clabel(cs, inline=True, fontsize=8, fmt="%.1f")
-    axes[1].set_title(r"overlaid with the CWAVE kernel  $(k_{gp}=1,\ \varphi_{hf}=1)$")
+    axes[1].set_title(r"$|X_S|$  + CWAVE kernel  $(k_{gp}=1,\ \varphi_{hf}=1)$")
     fig.colorbar(pcm, ax=axes[1], label=r"$|X_S|$  (a.u.)")
 
-    for ax in axes:
-        ax.axvspan(
-            float(k_rg_1d.min()), 0.0, facecolor="0.55", alpha=0.10, hatch="////"
-        )
-        ax.set_aspect("equal")
-        ax.set_xlim(float(k_rg_1d.min()), float(k_rg_1d.max()))
-        ax.set_ylim(float(k_az_1d.min()), float(k_az_1d.max()))
-    axes[0].text(
-        0.03,
-        0.96,
-        r"$k_x<0$ : outside $A$",
-        transform=axes[0].transAxes,
-        ha="left",
-        va="top",
-        fontsize=9,
-        color="0.2",
-        bbox={"boxstyle": "round,pad=0.25", "fc": "white", "ec": "0.7", "alpha": 0.85},
+    pcm = axes[2].pcolormesh(
+        k_rg_1d, k_az_1d, integrand_2d, cmap="inferno", shading="auto"
     )
+    axes[2].set_title(
+        r"integrand  kernel $\times\, |X_S|_{\rm norm}$"
+        r"   $\ \sum \Rightarrow$  CWAVE $= $" + f"{cwave_val:.2f}"
+    )
+    fig.colorbar(pcm, ax=axes[2], label=r"kernel $\times\, |X_S|_{\rm norm}$  (a.u.)")
+
     for ax in axes:
+        ax.set_facecolor("black")
+        ax.set_aspect("equal")
+        ax.set_xlim(0.0, kmax_display)
+        ax.set_ylim(-kmax_display, kmax_display)
         ax.set_xlabel(r"$k_x$ (range)  [rad m$^{-1}$]")
         ax.set_ylabel(r"$k_y$ (azimuth)  [rad m$^{-1}$]")
+    fig.suptitle(title, fontsize=14)
 
-    fig.savefig(FIG_DIR / "certification_crossspec_kernels.png", bbox_inches="tight")
-    plt.close(fig)
+
+def _gen_certification() -> None:
+    """Certify the CWAVE kernels on real, co-registered Sentinel-1 WV data.
+
+    Generates one figure per decode method, each with three panels : the modulus
+    ``|X_S|``, the same spectrum with the (k_gp=1, phi_hf=1) kernel contours
+    overlaid, and the pointwise integrand ``kernel x |X_S|_norm x dk`` that is
+    summed to produce the CWAVE parameter. All methods come from the same S1A
+    WV1 acquisition (2025-05-01, orbit 058996_075117) and are plotted on the
+    same display domain (see :func:`_plot_method`). The SAR ``sigma0``
+    roughness image is documented separately (not generated here).
+    """
+    cfg = get_default_config()["cwave"]
+    wlmax, wlmin = cfg["cwave_wlmax"], cfg["cwave_wlmin"]
+    n_k, n_phi = cfg["cwave_Nk"], cfg["cwave_Nphi"]
+    kmin_ = kmin(wlmax, wlmin)
+    kmax_display = 2.0 * np.pi / wlmin
+    n_grid = 128
+
+    with xr.open_dataset(OCN_WV_NC) as ds:
+        xs_polar = polar_to_cartesian(ds, n_range=n_grid, n_azimuth=n_grid)
+        xs_sinh = compute_ocn_sinh_cartesian(ds, lag=2, m_range=256, m_azimuth=256)
+    with xr.open_dataset(XSP_NC) as ds:
+        xs_xsp = _l1b_cross_spectrum(ds, lag=2, time_idx=0, pol_idx=0)
+
+    methods = [
+        ("OCN WV  polar $\\to$ cartesian", "ocn_polar", xs_polar),
+        ("OCN WV  cart-sinh  $\\to$ regular", "ocn_sinh", xs_sinh),
+        ("SARWAVE L1B  XSP  (2tau)", "xsp", xs_xsp),
+    ]
+    _apply_style()
+    for title, fname, xs in methods:
+        (
+            k_rg_1d,
+            k_az_1d,
+            spec_2d,
+            kernel_2d,
+            integrand_2d,
+            cwave_val,
+        ) = _row_arrays(xs, kmin_, kmax_display, n_k, n_phi)
+        fig, axes = plt.subplots(1, 3, figsize=(17.0, 5.6), constrained_layout=True)
+        _plot_method(
+            fig,
+            axes,
+            k_rg_1d,
+            k_az_1d,
+            spec_2d,
+            kernel_2d,
+            integrand_2d,
+            cwave_val,
+            kmax_display,
+            title,
+        )
+        fig.savefig(FIG_DIR / f"certification_{fname}.png", bbox_inches="tight")
+        plt.close(fig)
 
 
 def _gen_map() -> None:

@@ -7,25 +7,67 @@ This page certifies that the CWAVE kernels are consistent with the structure of
 real SAR ocean cross-spectra, and shows a full georeferenced CWAVE map produced
 by the task-10 script.
 
-Kernels superimposed on a real cross-spectrum
----------------------------------------------
+From surface roughness to CWAVE on real data
+--------------------------------------------
 
-The figure below shows a **real ESA OCN WV Sentinel-1 cartesian
-cross-spectrum** (``oswCartSpecRe``/``oswCartSpecIm``, one ``iw1`` tile, lag 2,
-resampled onto the regular one-sided grid) together with the CWAVE kernel
-(:math:`k_{gp}=1`, :math:`\varphi_{hf}=1`) **superimposed** as contours.
+The chain is : the sea-surface roughness modulates the radar backscatter
+:math:`\sigma^0`, which the SAR cross-spectra represent in the wavenumber
+domain, from which the CWAVE parameters are extracted. All the figures below
+come from the **same S1A WV1 acquisition** (2025-05-01, orbit 058996_075117).
 
-.. figure:: figures/certification_crossspec_kernels.png
+SAR roughness
+~~~~~~~~~~~~~
+
+.. figure:: figures/s1a-wv1-slc-vv-20250501t060101-20250501t060104-058996-075117-001-roughness.png
    :align: center
-   :width: 100%
+   :width: 60%
 
-   Left: the cartesian cross-spectrum :math:`|X_S|` (one tile). Right: the same
-   cross-spectrum with the CWAVE kernel contours (:math:`k_{gp}=1`,
-   :math:`\varphi_{hf}=1`) overlaid in cyan. The kernel ellipses are elongated
-   along the range direction (:math:`k_x`), matching the spectral structure.
+   SAR :math:`\sigma^0` roughness image of the sea surface (S1A WV1, VV). The
+   modulations of this surface are what the cross-spectra below encode in the
+   wavenumber domain.
+
+Cross-spectra and CWAVE kernels
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each of the three figures below shows, for one decode method, three panels : the
+modulus :math:`|X_S|`, the same spectrum with the CWAVE kernel
+(:math:`k_{gp}=1`, :math:`\varphi_{hf}=1`) **superimposed** as contours, and the
+**pointwise integrand** :math:`\text{kernel} \times |X_S|_{\text{norm}}` that is
+summed over the domain to yield the CWAVE parameter (the intermediate step of
+:func:`cwaves.compute_cwaves.compute_cwave_parameters`). All three are plotted
+on the **same display domain** :math:`k_x \in [0, k_{max}]`,
+:math:`k_y \in [-k_{max}, k_{max}]` (black = zero spectrum), so the panels are
+directly comparable.
+
+* **OCN WV, polar → cartesian** (``oswPolSpec`` resampled to a cartesian grid,
+  :func:`cwaves.client.polar_to_cartesian`) :
+
+  .. figure:: figures/certification_ocn_polar.png
+     :align: center
+     :width: 100%
+
+* **OCN WV, cartesian-sinh → regular** (``oswCartSpec`` sinh grid decompressed
+  to a regular one-sided grid in rad/m,
+  :func:`cwaves.ocn_sinh.compute_ocn_sinh_cartesian`) :
+
+  .. figure:: figures/certification_ocn_sinh.png
+     :align: center
+     :width: 100%
+
+* **SARWAVE L1B XSP** (the self-contained ``xspectra_2tau`` cross-spectrum,
+  :func:`cwaves.compute_cwaves_from_l1b`) :
+
+  .. figure:: figures/certification_xsp.png
+     :align: center
+     :width: 100%
+
+In each figure, the middle panel overlays the CWAVE kernel contours (cyan) on
+:math:`|X_S|` -- the kernel ellipses are elongated along the range direction
+(:math:`k_x`), matching the spectral structure -- and the right panel shows the
+integrand, whose sum over the domain is the CWAVE value in the title.
 
 The elliptic, range-elongated support of the kernel follows the domain :math:`A`
-and is consistent with the dominant lobes of the cross-spectrum, which is the
+and is consistent with the dominant lobes of the cross-spectra, which is the
 intended behaviour of the orthonormal basis on :math:`A`.
 
 Georeferenced CWAVE map
