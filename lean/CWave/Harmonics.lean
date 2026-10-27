@@ -436,14 +436,18 @@ lemma F_even (m : ℕ) (hm : Even m) : F m = fun t => Real.sqrt (2 / Real.pi) * 
   · simp [F, hm, hm1]
 
 lemma F_odd (m : ℕ) (hm : Odd m) (hm1 : m ≠ 1) :
-    F m = fun t => Real.sqrt (2 / Real.pi) * Real.cos ((↑(m - 1)) * t) := by
+    F m = fun t => Real.sqrt (2 / Real.pi) * Real.cos ((m - 1) * t) := by
   ext t
   have hneE : ¬ Even m := by
     intro he
     rcases he with ⟨a, ha⟩
     rcases hm with ⟨b, hb⟩
     omega
-  simp [F, hm1, hneE]
+  unfold F
+  split_ifs with h1 hE
+  · exact hm1 h1
+  · exact hneE hE
+  · rfl
 
 /-- `∫ F_n = 0` for `n >= 2` : the single-frequency integral vanishes. -/
 lemma integral_F_zero (n : ℕ) (hn : 1 < n) :
