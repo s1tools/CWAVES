@@ -46,3 +46,5 @@ intersphinx_mapping = {
 # -- Options for HTML output -------------------------------------------------
 
 html_theme = "sphinx_rtd_theme"
+html_logo = "_static/logo_ifremer.jpg"
+html_logo_width = "220px"

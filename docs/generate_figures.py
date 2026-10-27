@@ -38,6 +38,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import xarray as xr  # noqa: E402
+from matplotlib import colors as mcolors  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -57,6 +58,16 @@ from cwaves.scripts.plot_kernels import (  # noqa: E402
 )
 
 FIG_DIR = Path(__file__).resolve().parent / "figures"
+
+#: white -> red signal colormap for the certification cross-spectra / integrands
+CWMAP = mcolors.LinearSegmentedColormap.from_list(
+    "cwave",
+    ["white", "violet", "mediumpurple", "cyan", "springgreen", "yellow", "red"],
+)
+
+#: azimuth half-width (rad/m) of the certification display window (beyond it,
+#: there is no signal and no kernel)
+K_Y_BAND = 0.15
 
 #: path of the ESA OCN WV IW osw fixture shipped in ``assets/`` (task-10 map)
 OCN_IW1_NC = REPO_ROOT / "assets" / "s1d-iw1-osw-vv-fixture.nc"
@@ -180,32 +191,30 @@ def _plot_method(
     integrand_2d,
     cwave_val,
     kmax_display,
+    k_y_band,
     title,
 ):
     """Render the three panels of one decode method on a common display domain.
 
-    All panels share the CWAVE display domain ``[0, kmax_display] x
-    [-kmax_display, kmax_display]`` on a **black** background, so the part of the
-    domain outside a method's wavenumber support reads as a zero spectrum and
-    every panel has the same size.
+    All panels share the display domain ``[0, kmax_display] x
+    [-k_y_band, k_y_band]`` (cropped in azimuth, where there is no signal or
+    kernel beyond it) and the white->red :data:`CWMAP` colormap (white = zero),
+    so the panels are directly comparable and the empty corners read as zero.
     """
-    pcm = axes[0].pcolormesh(k_rg_1d, k_az_1d, spec_2d, cmap="inferno", shading="auto")
+    pcm = axes[0].pcolormesh(k_rg_1d, k_az_1d, spec_2d, cmap=CWMAP, shading="auto")
     axes[0].set_title(r"cross-spectrum  $|X_S|$")
     fig.colorbar(pcm, ax=axes[0], label=r"$|X_S|$  (a.u.)")
 
     pcm = axes[1].pcolormesh(
-        k_rg_1d, k_az_1d, spec_2d, cmap="inferno", shading="auto", alpha=0.85
+        k_rg_1d, k_az_1d, spec_2d, cmap=CWMAP, shading="auto", alpha=0.85
     )
-    cs = axes[1].contour(
-        k_rg_1d, k_az_1d, kernel_2d, levels=24, colors="cyan", linewidths=1.0
+    axes[1].contour(
+        k_rg_1d, k_az_1d, kernel_2d, levels=16, colors="0.25", linewidths=1.0
     )
-    axes[1].clabel(cs, inline=True, fontsize=8, fmt="%.1f")
     axes[1].set_title(r"$|X_S|$  + CWAVE kernel  $(k_{gp}=1,\ \varphi_{hf}=1)$")
     fig.colorbar(pcm, ax=axes[1], label=r"$|X_S|$  (a.u.)")
 
-    pcm = axes[2].pcolormesh(
-        k_rg_1d, k_az_1d, integrand_2d, cmap="inferno", shading="auto"
-    )
+    pcm = axes[2].pcolormesh(k_rg_1d, k_az_1d, integrand_2d, cmap=CWMAP, shading="auto")
     axes[2].set_title(
         r"integrand  kernel $\times\, |X_S|_{\rm norm}$"
         r"   $\ \sum \Rightarrow$  CWAVE $= $" + f"{cwave_val:.2f}"
@@ -213,10 +222,8 @@ def _plot_method(
     fig.colorbar(pcm, ax=axes[2], label=r"kernel $\times\, |X_S|_{\rm norm}$  (a.u.)")
 
     for ax in axes:
-        ax.set_facecolor("black")
-        ax.set_aspect("equal")
         ax.set_xlim(0.0, kmax_display)
-        ax.set_ylim(-kmax_display, kmax_display)
+        ax.set_ylim(-k_y_band, k_y_band)
         ax.set_xlabel(r"$k_x$ (range)  [rad m$^{-1}$]")
         ax.set_ylabel(r"$k_y$ (azimuth)  [rad m$^{-1}$]")
     fig.suptitle(title, fontsize=14)
@@ -272,6 +279,7 @@ def _gen_certification() -> None:
             integrand_2d,
             cwave_val,
             kmax_display,
+            K_Y_BAND,
             title,
         )
         fig.savefig(FIG_DIR / f"certification_{fname}.png", bbox_inches="tight")
