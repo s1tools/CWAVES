@@ -14,8 +14,9 @@ mirroring the IFREMER ``l2_osw_decompressor`` :
 
 The normalized (``m/m``) output grid is then **calibrated to physical wavenumbers
 (rad/m)** from the product's own arrays (no external ``int_pp2`` needed) : the
-maximum wavenumber is taken from the unambiguous polar array ``oswK`` (rad/m) and
-the range/azimuth extent ratio from the ``oswKx`` / ``oswKy`` arrays.
+range (``dkx``) and azimuth (``dky``) cell spacings are computed independently
+from ``oswKy`` / ``oswAziSize`` (azimuth) and ``raSamplingFreq`` /
+``owiIncidenceAngle`` (range), matching the IFREMER ``get_k_matrix``.
 
 This complements :func:`cwaves.client.polar_to_cartesian`, which goes through the
 polar spectrum ``oswPolSpec`` : both are valid ways to obtain a regular cartesian
@@ -31,6 +32,12 @@ import xarray as xr
 
 #: default sinh growth rate (``resGrowthRate``), the IFREMER processing default.
 DEFAULT_GROWTH_RATE = 1.0 / 30.1
+
+#: default range sub-image size (``xsubsize``), the IFREMER int_pp2 default.
+DEFAULT_XSUBSIZE = 1024
+
+#: speed of light (m/s)
+_SPEED_OF_LIGHT = 299792458.0
 
 
 def _sinc(arg: np.ndarray) -> np.ndarray:
@@ -92,34 +99,55 @@ def reconstruct_full_cart_spec(
 
 
 def _physical_scale(
-    ds: xr.Dataset, kx_idx: np.ndarray, ky_idx: np.ndarray
+    ds: xr.Dataset,
+    kx_idx: np.ndarray,
+    ky_idx: np.ndarray,
+    growth: float = DEFAULT_GROWTH_RATE,
+    xsubsize: int = DEFAULT_XSUBSIZE,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Calibrate the decompressed linear-index grid to physical wavenumbers (rad/m).
 
     The decompressed spectrum is uniform in its linear index. The physical
     wavenumber is ``index * dk`` (a uniform rad/m grid, as in the IFREMER
-    ``get_k_matrix``). The maximum wavenumber is taken from the unambiguous polar
-    array ``oswK`` (rad/m) and the range/azimuth extent ratio from the ``oswKx``
-    / ``oswKy`` arrays (dimensionless ``m/m`` ratio). The grid corner magnitude is
-    set to ``max(oswK)`` : ``k_y = max(oswK) / sqrt(aspect^2 + 1)`` and
-    ``k_x = aspect * k_y``.
+    ``get_k_matrix``). The range (``dkx``) and azimuth (``dky``) cell spacings are
+    computed **independently** from the product geometry : range and azimuth have
+    independent physical scales, so tying them by a single ratio (the old
+    ``oswKx.max()/oswKy.max()`` approach) under-estimates the azimuth scale and
+    compresses the azimuth energy.
+
+    * **azimuth** ``dky`` : ``mean(oswKy / (oswAziSize * KKy))`` with
+      ``KKy = sinh(growth * kappa) / growth`` (the azimuth sinh mapper), matching
+      the IFREMER ``get_k_matrix``.
+    * **range** ``dkx`` : ``(xresfac * raSamplingFreq / (c * M_range)) *
+      4 pi sin(inca)`` with ``xresfac = M_range / xsubsize``.
 
     Args:
-        ds: the OCN WV dataset (must contain ``oswK``, ``oswKx`` and ``oswKy``).
+        ds: the OCN WV dataset (must contain ``oswKy``, ``oswAziSize``,
+            ``owiIncidenceAngle`` and the ``raSamplingFreq`` attribute).
         kx_idx: the range linear-index grid (``arange(M) - M // 2``).
         ky_idx: the azimuth linear-index grid (``arange(M) - M // 2``).
+        growth: the sinh growth rate (``resGrowthRate``); default
+            :data:`DEFAULT_GROWTH_RATE`.
+        xsubsize: the range sub-image size (``xsubsize`` from the IFREMER
+            ``int_pp2``); default :data:`DEFAULT_XSUBSIZE`.
 
     Returns:
         A tuple ``(kx, ky)`` of the physical wavenumber grids in rad/m.
     """
-    kmax_polar = float(np.nanmax(ds["oswK"].values))
-    osw_kx = ds["oswKx"].squeeze().values
     osw_ky = ds["oswKy"].squeeze().values
-    aspect = float(np.nanmax(osw_kx) / np.nanmax(osw_ky))
-    ky_max = kmax_polar / np.sqrt(aspect**2 + 1.0)
-    kx_max = aspect * ky_max
-    dkx = kx_max / float(np.max(np.abs(kx_idx)))
-    dky = ky_max / float(np.max(np.abs(ky_idx)))
+    n_az = osw_ky.size
+    kappa = np.arange(n_az) - n_az // 2
+    kky = np.sinh(growth * kappa) / growth
+    azi_size = float(np.ravel(ds["oswAziSize"].values)[0])
+    dky = float(np.nanmean(osw_ky / (azi_size * kky)))
+
+    ra_sample_freq = float(ds.attrs["raSamplingFreq"])
+    inca = np.deg2rad(float(np.ravel(ds["owiIncidenceAngle"].values)[0]))
+    m_range = kx_idx.size
+    xresfac = m_range / xsubsize
+    dkx = (xresfac * ra_sample_freq / (_SPEED_OF_LIGHT * m_range)) * (
+        4.0 * np.pi * np.sin(inca)
+    )
     return kx_idx * dkx, ky_idx * dky
 
 
@@ -129,6 +157,7 @@ def compute_ocn_sinh_cartesian(
     m_range: int = 256,
     m_azimuth: int = 256,
     growth: float = DEFAULT_GROWTH_RATE,
+    xsubsize: int = DEFAULT_XSUBSIZE,
     osw_az_idx: int = 0,
     osw_ra_idx: int = 0,
 ) -> xr.DataArray:
@@ -141,13 +170,15 @@ def compute_ocn_sinh_cartesian(
 
     Args:
         ds: an opened OCN WV measurement dataset (must contain
-            ``oswCartSpecRe`` / ``oswCartSpecIm`` / ``oswK`` / ``oswKx`` /
-            ``oswKy``).
+            ``oswCartSpecRe`` / ``oswCartSpecIm`` / ``oswKy`` / ``oswAziSize`` /
+            ``owiIncidenceAngle`` and the ``raSamplingFreq`` attribute).
         lag: the ``oswLag`` index (0/1/2; default 2 = the 2-tau cross-spectrum).
         m_range: number of range wavenumbers of the regular output grid.
         m_azimuth: number of azimuth wavenumbers of the regular output grid.
         growth: the sinh growth rate (``resGrowthRate``); default
             :data:`DEFAULT_GROWTH_RATE`.
+        xsubsize: the range sub-image size (``xsubsize`` from the IFREMER
+            ``int_pp2``); default :data:`DEFAULT_XSUBSIZE`.
         osw_az_idx: the ``oswAzSize`` tile index.
         osw_ra_idx: the ``oswRaSize`` tile index.
 
@@ -186,7 +217,7 @@ def compute_ocn_sinh_cartesian(
     # 3. calibrate the uniform linear-index grid to physical rad/m
     kx_idx = np.arange(m_range) - np.floor(m_range / 2)
     ky_idx = np.arange(m_azimuth) - np.floor(m_azimuth / 2)
-    kx, ky = _physical_scale(ds, kx_idx, ky_idx)
+    kx, ky = _physical_scale(ds, kx_idx, ky_idx, growth=growth, xsubsize=xsubsize)
 
     # 4. keep the one-sided (range >= 0) half, expected by compute_cwave_parameters
     sel = kx >= 0
