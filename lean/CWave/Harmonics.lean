@@ -436,7 +436,7 @@ lemma F_even (m : ℕ) (hm : Even m) : F m = fun t => Real.sqrt (2 / Real.pi) * 
   · simp [F, hm, hm1]
 
 lemma F_odd (m : ℕ) (hm : Odd m) (hm1 : m ≠ 1) :
-    F m = fun t => Real.sqrt (2 / Real.pi) * Real.cos ((m - 1) * t) := by
+    F m = fun t => Real.sqrt (2 / Real.pi) * Real.cos ((m - 1 : ℕ) * t) := by
   ext t
   have hneE : ¬ Even m := by
     intro he

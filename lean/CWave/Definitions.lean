@@ -27,7 +27,7 @@ noncomputable def G (n : ℕ) (t : ℝ) : ℝ :=
 noncomputable def F (m : ℕ) (t : ℝ) : ℝ :=
   if m = 1 then 1 / Real.sqrt Real.pi
   else if Even m then Real.sqrt (2 / Real.pi) * Real.sin (m * t)
-  else Real.sqrt (2 / Real.pi) * Real.cos ((m - 1) * t)
+  else Real.sqrt (2 / Real.pi) * Real.cos ((m - 1 : ℕ) * t)
 
 noncomputable def a1 (kmin kmax : ℝ) : ℝ := -12 / (4 * kmin^2 - kmax^2)
 noncomputable def a2 (kmin kmax : ℝ) : ℝ := (kmax^2 - 16 * kmin^2) / (kmax^2 - 4 * kmin^2)
