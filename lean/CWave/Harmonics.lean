@@ -443,11 +443,13 @@ lemma F_odd (m : ℕ) (hm : Odd m) (hm1 : m ≠ 1) :
     rcases he with ⟨a, ha⟩
     rcases hm with ⟨b, hb⟩
     omega
-  unfold F
-  split_ifs with h1 hE
-  · exact hm1 h1
-  · exact hneE hE
-  · rfl
+  by_cases h1 : m = 1
+  · exfalso
+    exact hm1 h1
+  · by_cases hE : Even m
+    · exfalso
+      exact hneE hE
+    · simp [F, h1, hE]
 
 /-- `∫ F_n = 0` for `n >= 2` : the single-frequency integral vanishes. -/
 lemma integral_F_zero (n : ℕ) (hn : 1 < n) :
@@ -468,28 +470,24 @@ lemma integral_F_zero (n : ℕ) (hn : 1 < n) :
       · exfalso
         exact hne he
       · exact ho
-    set k := n - 1 with hk
-    have hkm1 : k ≠ 0 := by
-      rcases hk with rfl
-      omega
-    have hke : Even k := by
-      rcases hodd with ⟨q, rfl⟩
-      omega
-    have hkeZ : Even ((k : ℤ)) := by
-      rcases hke with ⟨a, rfl⟩
-      use (a : ℤ)
-      ring
-    have hkn : (k : ℤ) ≠ 0 := by exact_mod_cast hkm1
     rw [F_odd n hodd (by omega)]
     dsimp
     rw [intervalIntegral.integral_const_mul]
-    have hI : (∫ t in (-π / 2)..(π / 2), Real.cos (k * t)) = 0 := by
-      have hc : ∀ t, Real.cos (k * t) = Real.cos (((k : ℤ) : ℝ) * t) := by
+    have hI : (∫ t in (-π / 2)..(π / 2), Real.cos ((↑n - 1) * t)) = 0 := by
+      have hsub : (↑n - 1) = (↑(n - 1) : ℝ) := by norm_cast
+      have hc : ∀ t, Real.cos ((↑n - 1) * t) = Real.cos ((↑(n - 1)) * t) := by
         intro t
-        have hcast : (k : ℝ) = ((k : ℤ) : ℝ) := by norm_cast
-        rw [hcast]
+        rw [show (↑n - 1) * t = (↑(n - 1)) * t by rw [hsub]; ring]
       rw [intervalIntegral.integral_congr (fun t _ => hc t)]
-      exact integral_cos_even (k : ℤ) hkn hkeZ
+      have hkn : ((n - 1 : ℕ) : ℤ) ≠ 0 := by
+        intro h
+        have : (n - 1 : ℕ) = 0 := by exact_mod_cast h
+        omega
+      have hke : Even ((n - 1 : ℕ) : ℤ) := by
+        rcases hodd with ⟨q, rfl⟩
+        use (q : ℤ)
+        ring
+      exact integral_cos_even ((n - 1 : ℕ) : ℤ) hkn hke
     rw [hI]
     ring
 
@@ -505,9 +503,10 @@ theorem angular_orthonormal (m n : ℕ) (hm : 1 ≤ m) (hn : 1 ≤ n) :
       have h : ∫ t in (-π / 2)..(π / 2), F m t * F n t = 1 := by
         have hInt : ∀ t, F m t * F n t = 1 / Real.pi := by
           intro t
+          have hsq : (Real.sqrt Real.pi) * (Real.sqrt Real.pi) = Real.pi := by
+            rw [mul_self, pow_two, Real.sq_sqrt (by positivity : 0 ≤ Real.pi)]
           simp [hm1, hn1, F_one]
-          field_simp
-          rw [pow_two, Real.sq_sqrt (by positivity : 0 ≤ Real.pi)]
+          field_simp [hsq]
         rw [intervalIntegral.integral_congr (fun t _ => hInt t)]
         have hConst : (∫ t in (-π / 2)..(π / 2), (1 / Real.pi)) =
             (1 / Real.pi) * (∫ t in (-π / 2)..(π / 2), 1) := by
@@ -594,7 +593,7 @@ theorem angular_orthonormal (m n : ℕ) (hm : 1 ≤ m) (hn : 1 ≤ n) :
                 (Real.sqrt (2 / Real.pi) * Real.cos ((n - 1 : ℕ) * t))) =
                 (∫ t in (-π / 2)..(π / 2),
                   (Real.sqrt (2 / Real.pi) * Real.sqrt (2 / Real.pi)) *
-                  (Real.sin (m * t) * Real.cos ((n - 1 : ℕ) * t))) := by
+                  (Real.sin (m * t) * Real.cos ((n - 1) * t))) := by
               apply intervalIntegral.integral_congr
               intro t _
               ring
