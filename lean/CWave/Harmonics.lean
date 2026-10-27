@@ -473,11 +473,11 @@ lemma integral_F_zero (n : ℕ) (hn : 1 < n) :
     rw [F_odd n hodd (by omega)]
     dsimp
     rw [intervalIntegral.integral_const_mul]
-    have hI : (∫ t in (-π / 2)..(π / 2), Real.cos ((↑n - 1) * t)) = 0 := by
-      have hsub : (↑n - 1) = (↑(n - 1) : ℝ) := by norm_num
-      have hc : ∀ t, Real.cos ((↑n - 1) * t) = Real.cos ((↑(n - 1)) * t) := by
+    have hI : (∫ t in (-π / 2)..(π / 2), Real.cos ((n - 1 : ℕ) * t)) = 0 := by
+      have hc : ∀ t, Real.cos ((n - 1 : ℕ) * t) = Real.cos (((n - 1 : ℕ) : ℤ) * t) := by
         intro t
-        rw [show (↑n - 1) * t = (↑(n - 1)) * t by rw [hsub]; ring]
+        have hcast : ((n - 1 : ℕ) : ℝ) = (((n - 1 : ℕ) : ℤ) : ℝ) := by norm_cast
+        rw [hcast]
       rw [intervalIntegral.integral_congr (fun t _ => hc t)]
       have hkn : ((n - 1 : ℕ) : ℤ) ≠ 0 := by
         intro h
@@ -485,7 +485,8 @@ lemma integral_F_zero (n : ℕ) (hn : 1 < n) :
         omega
       have hke : Even ((n - 1 : ℕ) : ℤ) := by
         rcases hodd with ⟨q, rfl⟩
-        exact ⟨q, by ring⟩
+        use (q : ℤ)
+        omega
       exact integral_cos_even ((n - 1 : ℕ) : ℤ) hkn hke
     rw [hI]
     ring
@@ -503,9 +504,10 @@ theorem angular_orthonormal (m n : ℕ) (hm : 1 ≤ m) (hn : 1 ≤ n) :
         have hInt : ∀ t, F m t * F n t = 1 / Real.pi := by
           intro t
           have hsq : (Real.sqrt Real.pi) * (Real.sqrt Real.pi) = Real.pi := by
-            rw [mul_self, pow_two, Real.sq_sqrt (by positivity : 0 ≤ Real.pi)]
+            rw [← pow_two, Real.sq_sqrt (by positivity : 0 ≤ Real.pi)]
           simp [hm1, hn1, F_one]
           field_simp [hsq]
+          exact (Real.sq_sqrt (by positivity : 0 ≤ Real.pi)).symm
         rw [intervalIntegral.integral_congr (fun t _ => hInt t)]
         have hConst : (∫ t in (-π / 2)..(π / 2), (1 / Real.pi)) =
             (1 / Real.pi) * (∫ t in (-π / 2)..(π / 2), 1) := by
@@ -520,7 +522,8 @@ theorem angular_orthonormal (m n : ℕ) (hm : 1 ≤ m) (hn : 1 ≤ n) :
       simpa [hm1, hn1] using h
     · -- m = 1, n ≠ 1
       have h : ∫ t in (-π / 2)..(π / 2), F m t * F n t = 0 := by
-        simp [hm1, F_one]
+        rw [hm1, F_one]
+        dsimp
         rw [intervalIntegral.integral_const_mul]
         rw [integral_F_zero n (by omega)]
         ring
@@ -567,7 +570,8 @@ theorem angular_orthonormal (m n : ℕ) (hm : 1 ≤ m) (hn : 1 ≤ n) :
         by_cases hn1 : n = 1
         · -- n = 1
           have h : ∫ t in (-π / 2)..(π / 2), F m t * F n t = 0 := by
-            simp [hn1, F_one]
+            rw [hn1, F_one]
+            dsimp
             rw [intervalIntegral.integral_mul_const]
             rw [integral_F_zero m (by omega)]
             ring
@@ -592,7 +596,7 @@ theorem angular_orthonormal (m n : ℕ) (hm : 1 ≤ m) (hn : 1 ≤ n) :
                 (Real.sqrt (2 / Real.pi) * Real.cos ((n - 1 : ℕ) * t))) =
                 (∫ t in (-π / 2)..(π / 2),
                   (Real.sqrt (2 / Real.pi) * Real.sqrt (2 / Real.pi)) *
-                  (Real.sin (m * t) * Real.cos ((n - 1) * t))) := by
+                  (Real.sin (m * t) * Real.cos ((n - 1 : ℕ) * t))) := by
               apply intervalIntegral.integral_congr
               intro t _
               ring
@@ -662,7 +666,8 @@ theorem angular_orthonormal (m n : ℕ) (hm : 1 ≤ m) (hn : 1 ≤ n) :
       · by_cases hn1 : n = 1
         · -- n = 1, m odd >= 3
           have h : ∫ t in (-π / 2)..(π / 2), F m t * F n t = 0 := by
-            simp [hn1, F_one]
+            rw [hn1, F_one]
+            dsimp
             rw [intervalIntegral.integral_mul_const]
             rw [integral_F_zero m (by omega)]
             ring
@@ -709,10 +714,11 @@ theorem angular_orthonormal (m n : ℕ) (hm : 1 ≤ m) (hn : 1 ≤ n) :
           by_cases heq : m = n
           · have hI : ∫ t in (-π / 2)..(π / 2),
               Real.cos ((m - 1 : ℕ) * t) * Real.cos ((n - 1 : ℕ) * t) = Real.pi / 2 := by
-              have hm1p : (m - 1 : ℕ) ≠ 0 := by
+              have hn1p : (n - 1 : ℕ) ≠ 0 := by
                 intro h
+                have : (n - 1 : ℕ) = 0 := by simpa using h
                 omega
-              simpa [heq, hm1p] using integral_cos_cos (m - 1) (n - 1) hnm1E hnn1E
+              simpa [heq, hn1p] using integral_cos_cos (m - 1) (n - 1) hnm1E hnn1E
             calc
               _ = (2 / Real.pi) * (Real.pi / 2) := by rw [h, hI]
               _ = 1 := by field_simp
