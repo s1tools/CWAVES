@@ -18,6 +18,10 @@ Public API
   SARWave L1B XSP cross-spectrum product (CLI: ``cwaves-osw --input-nc-l1b``).
 - :func:`cwaves.compute_cwaves_from_osw` : compute the CWAVE parameters from an
   ESA OCN WV Sentinel-1 measurement file (CLI: ``cwaves-osw --input-nc-osw``).
+- :func:`cwaves.compute_ocn_sinh_cartesian` : decode the OCN WV cartesian
+  cross-spectrum (``oswCartSpec``, sinh grid) to a regular one-sided grid in
+  rad/m, an alternative to :func:`cwaves.compute_cwaves_from_osw` (which goes
+  through the polar ``oswPolSpec``).
 
 Reference
 ---------
@@ -39,6 +43,7 @@ from cwaves.compute_cwaves import (
     harmonic_functions,
 )
 from cwaves.config import get_default_config, load_config
+from cwaves.ocn_sinh import compute_cwaves_from_ocn_sinh, compute_ocn_sinh_cartesian
 from cwaves.symmetrize_xspectra import symmetrize_xspectrum
 
 __all__ = [
@@ -46,6 +51,8 @@ __all__ = [
     "compute_kernel",
     "compute_cwaves_from_l1b",
     "compute_cwaves_from_osw",
+    "compute_ocn_sinh_cartesian",
+    "compute_cwaves_from_ocn_sinh",
     "gegenbauer_polynoms",
     "harmonic_functions",
     "symmetrize_xspectrum",

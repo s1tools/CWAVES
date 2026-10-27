@@ -14,10 +14,12 @@ import xarray as xr
 DIMS = ("burst", "tile_sample", "tile_line", "pol", "freq_line", "freq_sample")
 
 #: path of the ESA OCN WV Sentinel-1 measurement fixture shipped in assets/
+#: (same S1A WV1 acquisition / orbit as ``ASSETS_L1B_NC``, 2025-05-01, orbit
+#: 058996_075117) so the OCN and SARWAVE XSP figures share the same scene.
 ASSETS_NC = (
     Path(__file__).resolve().parent.parent
     / "assets"
-    / "s1d-wv1-ocn-vv-20260802t194456-20260802t194459-003951-00729e-013.nc"
+    / "s1a-wv1-ocn-vv-20250501t060101-058996-075117-001.nc"
 )
 
 #: path of the reduced SARWave L1B XSP cross-spectrum fixture shipped in assets/
