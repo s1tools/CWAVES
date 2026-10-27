@@ -474,7 +474,7 @@ lemma integral_F_zero (n : ℕ) (hn : 1 < n) :
     dsimp
     rw [intervalIntegral.integral_const_mul]
     have hI : (∫ t in (-π / 2)..(π / 2), Real.cos ((↑n - 1) * t)) = 0 := by
-      have hsub : (↑n - 1) = (↑(n - 1) : ℝ) := by norm_cast
+      have hsub : (↑n - 1) = (↑(n - 1) : ℝ) := by norm_num
       have hc : ∀ t, Real.cos ((↑n - 1) * t) = Real.cos ((↑(n - 1)) * t) := by
         intro t
         rw [show (↑n - 1) * t = (↑(n - 1)) * t by rw [hsub]; ring]
@@ -485,8 +485,7 @@ lemma integral_F_zero (n : ℕ) (hn : 1 < n) :
         omega
       have hke : Even ((n - 1 : ℕ) : ℤ) := by
         rcases hodd with ⟨q, rfl⟩
-        use (q : ℤ)
-        ring
+        exact ⟨q, by ring⟩
       exact integral_cos_even ((n - 1 : ℕ) : ℤ) hkn hke
     rw [hI]
     ring
