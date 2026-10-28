@@ -1,13 +1,18 @@
+/-
+Copyright (c) 2026 Antoine Grouazel. All rights reserved.
+Released under the MIT license as described in the file LICENSE.
+Authors: Antoine Grouazel
+-/
 module
 public import Mathlib.Analysis.SpecialFunctions.Pow.Real
 public import Mathlib.Analysis.SpecialFunctions.Trigonometric.Basic
-public import Mathlib.Data.Real.Basic
+public import Mathlib.Basic.Real.Basic
 public import Mathlib.Data.Int.Basic
 public import Mathlib.Data.Nat.Basic
 public import Mathlib.Analysis.SpecialFunctions.Log.Basic
 
 /-!
-# CWAVE kernel orthonormality — definitions (roadmap task 11)
+# CWAVE kernel orthonormality — definitions
 ...
 -/
 namespace CWave

@@ -29,6 +29,7 @@ Contents
    :caption: Contents
 
    theory
+   proofs
    installation
    usage
    certification

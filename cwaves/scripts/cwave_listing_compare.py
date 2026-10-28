@@ -183,8 +183,8 @@ def _plot_scatter(
     ax.plot(one_to_one, one_to_one, "k--", linewidth=1.0, label="1:1")
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
-    ax.set_xlabel(r"CWAVE $k_{gp}=%d,\ \varphi_{hf}=%d$  (xsar_slc)" % (k_gp, phi_hf))
-    ax.set_ylabel(r"CWAVE $k_{gp}=%d,\ \varphi_{hf}=%d$  (cwaves lib)" % (k_gp, phi_hf))
+    ax.set_xlabel(rf"CWAVE $k_{{gp}}={k_gp},\ \varphi_{{hf}}={phi_hf}$  (xsar_slc)")
+    ax.set_ylabel(rf"CWAVE $k_{{gp}}={k_gp},\ \varphi_{{hf}}={phi_hf}$  (cwaves lib)")
     fig.colorbar(plt.cm.ScalarMappable(cmap="viridis"), ax=ax, label="cwaves lib value")
     ax.set_title(
         f"xsar_slc vs cwaves lib  (k_gp={k_gp}, phi_hf={phi_hf})\n"

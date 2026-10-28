@@ -8,6 +8,7 @@ relaxedAutoImplicit = false
 weak.linter.mathlibStandardSet = true
 maxSynthPendingDepth = 3
 maxErrors = 0
+linter.style.header.license = "Released under the MIT license as described in the file LICENSE."
 
 [[require]]
 name = "mathlib"

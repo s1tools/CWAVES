@@ -20,7 +20,7 @@ This produces, in ``docs/figures/`` :
 * the SAR ``sigma0`` roughness image (``...-roughness.png``) is provided
   separately (not generated here) and is documented on the certification page.
 * ``cwave_map_k1_phi1.png``          -- the georeferenced CWAVE map (k_gp=1,
-  phi_hf=1) produced by the task-10 script :mod:`cwaves.scripts.iw_cwaves_map`.
+  phi_hf=1) produced by the script :mod:`cwaves.scripts.iw_cwaves_map`.
 
 The figures only need the core dependencies (numpy, xarray, scipy, matplotlib);
 the map figure additionally needs ``cartopy`` (the ``scripts`` extra).
@@ -426,8 +426,12 @@ def _gen_certification_all() -> None:
             n_k, n_phi, figsize=(4.2 * n_phi, 3.2 * n_k), constrained_layout=True
         )
         axes = np.atleast_2d(axes)
-        # one shared, symmetric color scale across all panels of this method
-        vmax = max(float(np.nanmax(np.abs(p))) for p, _ in panels)
+        # one shared, symmetric color scale across all panels of this method,
+        # bounded by the 90 % central interval (5th-95th percentile) of the
+        # absolute integrand so that isolated kernel peaks do not wash out
+        # the bulk of the data
+        all_abs = np.concatenate([np.abs(p).ravel() for p, _ in panels])
+        vmax = float(np.nanpercentile(all_abs, 95))
         for i, ax in enumerate(axes.ravel()):
             kg, ph = divmod(i, n_phi)
             integrand, val = panels[i]

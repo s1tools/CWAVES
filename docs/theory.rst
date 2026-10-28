@@ -37,8 +37,9 @@ where :math:`A` is the elliptic wavenumber domain (paper equations B1-B13) and
 :math:`|X_S|` is the real, non-negative modulus of the cross-spectrum.
 
 The orthonormality of the kernel basis on :math:`A` is the property that makes
-the decomposition well-posed. A formal (Lean) verification of this
-orthonormality is in progress (roadmap task 11, see the ``lean/`` directory).
+the decomposition well-posed. The angular part of it (the harmonics
+:math:`F_m` on :math:`[-\pi/2, \pi/2]`) is formally verified in Lean 4 — see
+:ref:`proofs`.
 
 The kernel basis
 ----------------

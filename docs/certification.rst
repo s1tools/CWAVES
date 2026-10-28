@@ -4,8 +4,8 @@ Certification
 .. _certification:
 
 This page certifies that the CWAVE kernels are consistent with the structure of
-real SAR ocean cross-spectra, and shows a full georeferenced CWAVE map produced
-by the task-10 script.
+real SAR ocean cross-spectra, and shows full georeferenced CWAVE maps produced
+by the :mod:`cwaves.scripts.iw_cwaves_map` script.
 
 From surface roughness to CWAVE on real data
 --------------------------------------------
@@ -82,7 +82,10 @@ for each decode method, on the same S1A WV1 acquisition as above. Each panel is
 the pointwise integrand :math:`\text{kernel}_{(k_{gp},\,\varphi_{hf})} \times
 |X_S|_{\rm norm}` for one parameter, with the resulting CWAVE value in the
 title; the colour scale is shared (and symmetric) across all panels of a method,
-so the 20-parameter output of the three decode methods is directly comparable.
+with its bounds set to the 90 % central interval (5th-95th percentile) of the
+absolute integrand so that isolated kernel peaks do not wash out the bulk of
+the data. This makes the 20-parameter output of the three decode methods
+directly comparable.
 
 * **OCN WV, polar → cartesian** :
 

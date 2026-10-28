@@ -1,6 +1,6 @@
 """CLI client to compute CWAVE parameters from Sentinel-1 SARWave products.
 
-Two input product types are supported (roadmap task 9). Both feed a
+Two input product types are supported. Both feed a
 **one-sided (half)** cross-spectrum (positive range ``k_rg >= 0``, two-sided
 azimuth ``k_az``) to :func:`cwaves.compute_cwave_parameters`, which computes the
 CWAVE parameters directly on that one-sided range domain using only the real

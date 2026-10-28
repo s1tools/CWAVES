@@ -1,6 +1,6 @@
 """Plot the CWAVE kernels in the (kx, ky) wavenumber domain.
 
-This script (roadmap task 12) renders the orthonormal CWAVE kernel basis of
+This script renders the orthonormal CWAVE kernel basis of
 Schulz-Stellenfleth et al. (2007) as 2D fields over the elliptic wavenumber
 domain ``A`` (paper equations B1-B13), in the style of the right-hand subplot
 of Fig. 2 of Quach et al. (2020).

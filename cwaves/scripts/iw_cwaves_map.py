@@ -1,6 +1,6 @@
 """Compute CWAVE parameters on the IW subswaths of an L2 OCN product.
 
-This script (roadmap task 10) computes the CWAVE parameters, tile by tile, on the
+This script computes the CWAVE parameters, tile by tile, on the
 cross-spectra of the IW subswaths (``iw1``/``iw2``/``iw3``) of a Sentinel-1 IW
 ocean wave product and renders a single georeferenced map with the three
 subswaths collocated in geographic space.

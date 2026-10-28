@@ -1,3 +1,8 @@
+/-
+Copyright (c) 2026 Antoine Grouazel. All rights reserved.
+Released under the MIT license as described in the file LICENSE.
+Authors: Antoine Grouazel
+-/
 module
 public import Mathlib.Analysis.SpecialFunctions.Integrals.Basic
 public import Mathlib.Analysis.Complex.Trigonometric
@@ -8,7 +13,7 @@ public import Mathlib.Tactic
 public import CWave.Definitions
 
 /-!
-# CWAVE trigonormal harmonics — orthonormality (roadmap task 11, pillar F2)
+# CWAVE trigonormal harmonics — orthonormality
 
 The angular basis `F_m` (defined in `CWave.Definitions`, exactly as the Python
 `harmonic_functions`) is orthonormal on `[-pi/2, pi/2]` :
@@ -114,7 +119,7 @@ lemma integral_cos_cos (a b : ℕ) (ha : Even a) (hb : Even b) :
   · by_cases ha0 : a = 0
     · -- a = b = 0 : integrand is 1, integral is pi, RHS = pi
       have hb0 : b = 0 := by rw [← heq]; exact ha0
-      simp [heq, ha0, hb0, zero_mul, cos_zero]
+      simp [heq, hb0, zero_mul, cos_zero]
       ring
     · -- a = b >= 1 : ∫ cos(a t)^2 = pi/2
       let m2 : ℤ := 2 * (a : ℤ)
@@ -170,11 +175,7 @@ lemma integral_cos_cos (a b : ℕ) (ha : Even a) (hb : Even b) :
     have hsumn : l ≠ 0 := by
       intro h
       have hln : (a : ℤ) + (b : ℤ) = 0 := by simpa [l] using h
-      have hae : (a : ℤ) ≥ 0 := by positivity
-      have hbe : (b : ℤ) ≥ 0 := by positivity
-      have ha0z : (a : ℤ) = 0 := by linarith
-      have hb0z : (b : ℤ) = 0 := by linarith
-      have : (a : ℤ) = (b : ℤ) := by simpa [ha0z, hb0z]
+      have : (a : ℤ) = (b : ℤ) := by linarith
       exact heq (by simpa [Int.natCast_inj] using this)
     have hsubE : Even k := by
       rcases ha with ⟨x, rfl⟩
@@ -248,7 +249,7 @@ lemma integral_sin_sin (a b : ℕ) (ha : Even a) (hb : Even b) :
   · by_cases ha0 : a = 0
     · -- a = b = 0 : integrand is 0, integral is 0, RHS = 0
       have hb0 : b = 0 := by rw [← heq]; exact ha0
-      simp [heq, ha0, hb0, zero_mul, sin_zero]
+      simp [heq, hb0, zero_mul, sin_zero]
     · -- a = b >= 1 : ∫ sin(a t)^2 = pi/2
       let m2 : ℤ := 2 * (a : ℤ)
       have hI : ∫ t in (-π / 2)..(π / 2), sin (a * t) * sin (b * t) = π / 2 := by
@@ -303,11 +304,7 @@ lemma integral_sin_sin (a b : ℕ) (ha : Even a) (hb : Even b) :
     have hsumn : l ≠ 0 := by
       intro h
       have hln : (a : ℤ) + (b : ℤ) = 0 := by simpa [l] using h
-      have hae : (a : ℤ) ≥ 0 := by positivity
-      have hbe : (b : ℤ) ≥ 0 := by positivity
-      have ha0z : (a : ℤ) = 0 := by linarith
-      have hb0z : (b : ℤ) = 0 := by linarith
-      have : (a : ℤ) = (b : ℤ) := by simpa [ha0z, hb0z]
+      have : (a : ℤ) = (b : ℤ) := by linarith
       exact heq (by simpa [Int.natCast_inj] using this)
     have hsubE : Even k := by
       rcases ha with ⟨x, rfl⟩
@@ -362,7 +359,7 @@ lemma integral_sin_sin (a b : ℕ) (ha : Even a) (hb : Even b) :
     simp [hI, heq]
 
 /-- `∫ sin(a t) cos(b t) = 0` over `[-pi/2, pi/2]` for even natural `a, b`. -/
-lemma integral_sin_cos (a b : ℕ) (ha : Even a) (hb : Even b) :
+lemma integral_sin_cos (a b : ℕ) (_ha : Even a) (_hb : Even b) :
     ∫ t in (-π / 2)..(π / 2), sin (a * t) * cos (b * t) = 0 := by
   let k : ℤ := (a : ℤ) - (b : ℤ)
   let l : ℤ := (a : ℤ) + (b : ℤ)
@@ -551,7 +548,8 @@ theorem angular_orthonormal (m n : ℕ) (hm : 1 ≤ m) (hn : 1 ≤ n) :
           rw [hR, intervalIntegral.integral_const_mul]
           rw [hsc2]
         by_cases heq : m = n
-        · have hI : ∫ t in (-π / 2)..(π / 2), Real.sin (m * t) * Real.sin (n * t) = Real.pi / 2 := by
+        · have hI : ∫ t in (-π / 2)..(π / 2), Real.sin (m * t) * Real.sin (n * t) =
+              Real.pi / 2 := by
             have hne0 : n ≠ 0 := by
               intro h
               omega
