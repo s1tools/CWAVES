@@ -13,7 +13,10 @@ From surface roughness to CWAVE on real data
 The chain is : the sea-surface roughness modulates the radar backscatter
 :math:`\sigma^0`, which the SAR cross-spectra represent in the wavenumber
 domain, from which the CWAVE parameters are extracted. All the figures below
-come from the **same S1A WV1 acquisition** (2025-05-01, orbit 058996_075117).
+come from the **same S1A WV1 acquisition** (2025-05-01, orbit 058996_075117,
+OCN WV measurement base name
+``s1a-wv1-ocn-vv-20250501t060101-058996-075117-001``, derived from the SLC
+``S1A_WV_SLC__1SSV_20250501T060101_20250501T061923_058996_075117_DD24``).
 
 SAR roughness
 ~~~~~~~~~~~~~
