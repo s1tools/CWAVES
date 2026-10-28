@@ -34,7 +34,7 @@ def test_detect_product_sarwave(sarwave_iw2_nc, tmp_path):
     # build a tiny SAFE-like dir containing a l1b-s1?-iw?-xsp file
     safe = tmp_path / "S1A_IW_XSP__1SDV_fake.SAFE"
     safe.mkdir()
-    shutil.copy(sarwave_iw2_nc, safe / "l1b-s1a-iw2-xsp-1sdv-fake.nc")
+    shutil.copy(sarwave_iw2_nc, safe / "l1b-s1b-iw2-xsp-1sdv-fake.nc")
     assert detect_product(str(safe)) == "sarwave"
 
 
@@ -133,6 +133,17 @@ def test_compute_ocn_subswath_lag1(ocn_iw1_nc):
     assert params.shape == (2, 2, 4, 5)
 
 
+def test_sarwave_iw_fixture_wavenumber_contract(sarwave_iw2_nc):
+    # the fixture must satisfy the cross-spectrum contract : one-sided range
+    # (k_rg >= 0) and a two-sided, symmetric azimuth (min ~= -max).
+    with xr.open_dataset(sarwave_iw2_nc, group="intraburst") as ds:
+        k_rg = ds["k_rg"].isel(tile_line=0, tile_sample=0).values
+        k_az = ds["k_az"].values
+    assert float(k_rg.min()) >= 0.0  # one-sided range
+    assert k_az.min() < 0 < k_az.max()  # two-sided azimuth
+    assert np.isclose(k_az.min(), -k_az.max(), atol=1e-5)  # symmetric about 0
+
+
 def test_compute_sarwave_subswath(sarwave_iw2_nc):
     lons, lats, params = compute_sarwave_subswath(
         str(sarwave_iw2_nc), "intraburst", 2, "VV"
@@ -197,7 +208,7 @@ def test_compute_ocn_subswath_interburst(ocn_iw1_nc):
 def test_entrypoint_sarwave(sarwave_iw2_nc, tmp_path):
     safe = tmp_path / "S1A_IW_XSP__1SDV_fake.SAFE"
     safe.mkdir()
-    shutil.copy(sarwave_iw2_nc, safe / "l1b-s1a-iw2-xsp-1sdv-fake.nc")
+    shutil.copy(sarwave_iw2_nc, safe / "l1b-s1b-iw2-xsp-1sdv-fake.nc")
     out = tmp_path / "sarwave_map.png"
     rc = entrypoint(
         [

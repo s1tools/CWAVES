@@ -432,7 +432,7 @@ def _gen_map() -> None:
     kmax = 2.0 * np.pi / cfg["cwave_wlmin"]
     ocn = compute_ocn_subswath(str(OCN_IW1_NC), "intraburst", 2, kmax, 96)
     sarwave = compute_sarwave_subswath(
-        str(REPO_ROOT / "assets" / "l1b-s1a-iw2-xsp-fixture.nc"), "intraburst", 2, "VV"
+        str(REPO_ROOT / "assets" / "l1b-s1b-iw2-xsp-fixture.nc"), "intraburst", 2, "VV"
     )
     results = {"iw1 (OCN osw)": ocn, "iw2 (SARWAVE xsp)": sarwave}
     title = "CWAVE (k_gp = 1, phi_hf = 1) - Sentinel-1 IW, intraburst, 2tau"

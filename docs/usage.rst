@@ -89,7 +89,7 @@ Two mutually-exclusive inputs :
 
 .. code-block:: bash
 
-   cwaves-osw --input-nc-l1b l1b-s1a-iw2-xsp.nc --lag 2 --pol 0
+   cwaves-osw --input-nc-l1b l1b-s1b-iw2-xsp.nc --lag 2 --pol 0
    cwaves-osw --input-nc-osw s1d-wv1-ocn-vv.nc --output-nc cwave.nc
 
 ``cwaves-kernels`` : render the kernel basis
