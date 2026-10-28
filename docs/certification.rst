@@ -70,6 +70,35 @@ The elliptic, range-elongated support of the kernel follows the domain :math:`A`
 and is consistent with the dominant lobes of the cross-spectra, which is the
 intended behaviour of the orthonormal basis on :math:`A`.
 
+Full CWAVE basis (all 20 parameters)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The three figures below render the **entire default CWAVE basis**
+(:math:`N_k = 4` Gegenbauer x :math:`N_\varphi = 5` harmonic = 20 parameters)
+for each decode method, on the same S1A WV1 acquisition as above. Each panel is
+the pointwise integrand :math:`\text{kernel}_{(k_{gp},\,\varphi_{hf})} \times
+|X_S|_{\rm norm}` for one parameter, with the resulting CWAVE value in the
+title; the colour scale is shared (and symmetric) across all panels of a method,
+so the 20-parameter output of the three decode methods is directly comparable.
+
+* **OCN WV, polar → cartesian** :
+
+  .. figure:: figures/certification_all_ocn_polar.png
+     :align: center
+     :width: 100%
+
+* **OCN WV, cartesian-sinh → regular** :
+
+  .. figure:: figures/certification_all_ocn_sinh.png
+     :align: center
+     :width: 100%
+
+* **SARWAVE L1B XSP** :
+
+  .. figure:: figures/certification_all_xsp.png
+     :align: center
+     :width: 100%
+
 Georeferenced CWAVE map
 -----------------------
 

@@ -29,7 +29,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from cwaves.compute_cwaves import compute_cwave_parameters  # noqa: E402
 from cwaves.scripts.iw_cwaves_map import resample_sinh_to_regular  # noqa: E402
 
-OCN_IW1_NC = REPO_ROOT / "assets" / "s1d-iw1-osw-vv-fixture.nc"
+OCN_IW1_NC = REPO_ROOT / "assets" / "s1a-iw1-osw-vv-fixture.nc"
 WLMAX, WLMIN = 600.0, 25.0
 N_GRID = 128
 N_REPEAT = 3

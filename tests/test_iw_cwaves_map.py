@@ -26,7 +26,7 @@ from cwaves.scripts.iw_cwaves_map import (
 
 
 def test_detect_product_ocn(ocn_iw1_nc):
-    # the fixture directory contains s1d-iw1-osw-*.nc only
+    # the fixture directory contains s1a-iw1-osw-*.nc only
     assert detect_product(str(ocn_iw1_nc.parent)) == "ocn"
 
 
@@ -75,6 +75,19 @@ def test_resample_sinh_to_regular(ocn_iw1_nc):
     assert xs.k_az.min() < 0 < xs.k_az.max()
     assert np.iscomplexobj(xs)
     assert np.isfinite(xs.values).any()
+
+
+def test_ocn_iw_fixture_wavenumber_contract(ocn_iw1_nc):
+    # the fixture must satisfy the cross-spectrum contract : one-sided range
+    # (k >= 0) and a two-sided, symmetric azimuth (min ~= -max). A lopsided
+    # azimuth crop (the historical defect) would bias the CWAVE projection.
+    for group in ("intraburst", "interburst"):
+        with xr.open_dataset(ocn_iw1_nc, group=group) as ds:
+            kx = ds["oswKx"].isel(oswAzSize=0, oswRaSize=0).values
+            ky = ds["oswKy"].isel(oswAzSize=0, oswRaSize=0).values
+        assert float(kx.min()) >= 0.0  # one-sided range
+        assert ky.min() < 0 < ky.max()  # two-sided azimuth
+        assert np.isclose(ky.min(), -ky.max(), atol=1e-5)  # symmetric about 0
 
 
 def test_resample_sinh_to_regular_with_nan_bins(ocn_iw1_nc):

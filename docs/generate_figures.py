@@ -70,7 +70,7 @@ CWMAP = mcolors.LinearSegmentedColormap.from_list(
 K_Y_BAND = 0.15
 
 #: path of the ESA OCN WV IW osw fixture shipped in ``assets/`` (task-10 map)
-OCN_IW1_NC = REPO_ROOT / "assets" / "s1d-iw1-osw-vv-fixture.nc"
+OCN_IW1_NC = REPO_ROOT / "assets" / "s1a-iw1-osw-vv-fixture.nc"
 
 #: real OCN WV + SARWAVE XSP L1B fixtures, from the SAME S1A WV1 acquisition
 #: (2025-05-01, orbit 058996_075117) so the certification rows share a scene.
@@ -286,6 +286,140 @@ def _gen_certification() -> None:
         plt.close(fig)
 
 
+def _all_param_panels(
+    xs: xr.DataArray, kmin_: float, kmax: float, n_k: int, n_phi: int
+) -> tuple[np.ndarray, np.ndarray, list[tuple[np.ndarray, float]]]:
+    """Compute the integrand panel and the CWAVE value for every (k_gp, phi_hf).
+
+    Generalises :func:`_row_arrays` to the full default basis : for each of the
+    ``n_k x n_phi`` kernels it returns the pointwise integrand
+    ``kernel_{kg,ph} x |X_S|_norm x dk`` (the step summed to yield the CWAVE
+    parameter) and the resulting scalar value.
+
+    Args:
+        xs: the one-sided (``k_rg >= 0``) complex cross-spectrum.
+        kmin_: minimum wavenumber (rad/m).
+        kmax: maximum wavenumber (rad/m).
+        n_k: number of Gegenbauer basis functions.
+        n_phi: number of harmonic basis functions.
+
+    Returns:
+        A tuple ``(k_rg_1d, k_az_1d, panels)`` where ``panels`` is a list of
+        ``(integrand_2d, cwave_val)`` ordered row-major (``k_gp`` outer,
+        ``phi_hf`` inner), each 2-D array oriented for plotting.
+    """
+    xs = xs.transpose("freq_sample", "freq_line")
+    k_rg_1d = np.asarray(xs.k_rg, dtype=float)
+    k_az_1d = np.asarray(xs.k_az, dtype=float)
+    kernel = compute_kernel(
+        krg=xs.k_rg,
+        kaz=xs.k_az,
+        kmin=kmin_,
+        kmax=kmax,
+        cwave_Nk=n_k,
+        cwave_Nphi=n_phi,
+    )
+    kk = (xs.k_rg**2 + xs.k_az**2) ** 0.5
+    xxs = xs.where((kk > kmin_) & (kk < kmax))
+    xxsm = (xxs.real**2 + xxs.imag**2) ** 0.5
+    dkrg = float(xxs.k_rg.diff(dim="freq_sample").mean(dim="freq_sample"))
+    dkaz = float(xxs.k_az.diff(dim="freq_line").mean(dim="freq_line"))
+    xxsmn = xxsm / (
+        xxsm.sum(dim=["freq_line", "freq_sample"], skipna=True) * dkrg * dkaz
+    )
+    panels: list[tuple[np.ndarray, float]] = []
+    for kg in range(1, n_k + 1):
+        for ph in range(1, n_phi + 1):
+            k = kernel["cwave_kernel"].sel(k_gp=kg, phi_hf=ph)
+            integrand = (k * xxsmn) * dkrg * dkaz
+            val = float(
+                integrand.sum(
+                    dim=["freq_sample", "freq_line"], skipna=True, min_count=1
+                )
+            )
+            panels.append((integrand.transpose("freq_line", "freq_sample").values, val))
+    return k_rg_1d, k_az_1d, panels
+
+
+def _gen_certification_all() -> None:
+    """Render the full default CWAVE basis (20 params) for each decode method.
+
+    For each of the three decode methods (same S1A WV1 acquisition as
+    :func:`_gen_certification`) this produces one figure with a ``Nk x Nphi``
+    grid of panels (default 4 x 5 = 20 CWAVE parameters). Each panel shows the
+    pointwise integrand ``kernel_{kg,ph} x |X_S|_norm`` for that parameter, with
+    the resulting CWAVE value in the title, so the three methods' full
+    20-parameter output can be compared at a glance.
+    """
+    cfg = get_default_config()["cwave"]
+    wlmax, wlmin = cfg["cwave_wlmax"], cfg["cwave_wlmin"]
+    n_k, n_phi = cfg["cwave_Nk"], cfg["cwave_Nphi"]
+    kmin_ = kmin(wlmax, wlmin)
+    kmax_display = 2.0 * np.pi / wlmin
+    n_grid = 128
+
+    with xr.open_dataset(OCN_WV_NC) as ds:
+        xs_polar = polar_to_cartesian(ds, n_range=n_grid, n_azimuth=n_grid)
+        xs_sinh = compute_ocn_sinh_cartesian(ds, lag=2, m_range=256, m_azimuth=256)
+    with xr.open_dataset(XSP_NC) as ds:
+        xs_xsp = _l1b_cross_spectrum(ds, lag=2, time_idx=0, pol_idx=0)
+
+    methods = [
+        ("OCN WV  polar $\\to$ cartesian", "ocn_polar", xs_polar),
+        ("OCN WV  cart-sinh  $\\to$ regular", "ocn_sinh", xs_sinh),
+        ("SARWAVE L1B  XSP  (2tau)", "xsp", xs_xsp),
+    ]
+    _apply_style()
+    for title, fname, xs in methods:
+        k_rg_1d, k_az_1d, panels = _all_param_panels(
+            xs, kmin_, kmax_display, n_k, n_phi
+        )
+        fig, axes = plt.subplots(
+            n_k, n_phi, figsize=(4.2 * n_phi, 3.2 * n_k), constrained_layout=True
+        )
+        axes = np.atleast_2d(axes)
+        # one shared, symmetric color scale across all panels of this method
+        vmax = max(float(np.nanmax(np.abs(p))) for p, _ in panels)
+        for i, ax in enumerate(axes.ravel()):
+            kg, ph = divmod(i, n_phi)
+            integrand, val = panels[i]
+            ax.pcolormesh(
+                k_rg_1d,
+                k_az_1d,
+                integrand,
+                cmap=CWMAP,
+                shading="auto",
+                vmin=-vmax,
+                vmax=vmax,
+            )
+            ax.set_xlim(0.0, kmax_display)
+            ax.set_ylim(-K_Y_BAND, K_Y_BAND)
+            ax.set_title(
+                rf"$k_{{gp}}$={kg + 1}, $\varphi_{{hf}}$={ph + 1}"
+                f"\nCWAVE = {val:.3f}",
+                fontsize=9,
+            )
+            if kg == n_k - 1:
+                ax.set_xlabel(r"$k_x$ (range) [rad m$^{-1}$]", fontsize=8)
+            if ph == 0:
+                ax.set_ylabel(r"$k_y$ (azimuth) [rad m$^{-1}$]", fontsize=8)
+        fig.colorbar(
+            plt.cm.ScalarMappable(
+                cmap=CWMAP,
+                norm=mcolors.TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax),
+            ),
+            ax=axes.ravel().tolist(),
+            label=r"kernel $\times\, |X_S|_{\rm norm}$  (a.u.)",
+        )
+        fig.suptitle(
+            f"{title}  --  CWAVE basis (Nk = {n_k}, Nphi = {n_phi}, "
+            f"{n_k * n_phi} parameters)",
+            fontsize=14,
+        )
+        fig.savefig(FIG_DIR / f"certification_all_{fname}.png", bbox_inches="tight")
+        plt.close(fig)
+
+
 def _gen_map() -> None:
     """Generate the georeferenced CWAVE map (k_gp=1, phi_hf=1) via task-10 functions.
 
@@ -309,6 +443,7 @@ def main() -> None:
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     _gen_kernels()
     _gen_certification()
+    _gen_certification_all()
     _gen_map()
     for f in sorted(FIG_DIR.glob("*.png")):
         print(f"wrote {f} ({f.stat().st_size} bytes)")

@@ -31,7 +31,7 @@ ASSETS_L1B_NC = (
 
 #: path of the reduced OCN IW osw per-subswath fixture (sinh grid, m/m units)
 ASSETS_OCN_IW1_NC = (
-    Path(__file__).resolve().parent.parent / "assets" / "s1d-iw1-osw-vv-fixture.nc"
+    Path(__file__).resolve().parent.parent / "assets" / "s1a-iw1-osw-vv-fixture.nc"
 )
 
 #: path of the reduced SARWAVE L1B IW XSP per-subswath fixture (uniform, rad/m)
