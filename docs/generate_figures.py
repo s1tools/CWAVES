@@ -47,10 +47,6 @@ from cwaves.client import _l1b_cross_spectrum, polar_to_cartesian  # noqa: E402
 from cwaves.compute_cwaves import compute_kernel  # noqa: E402
 from cwaves.config import get_default_config  # noqa: E402
 from cwaves.ocn_sinh import compute_ocn_sinh_cartesian  # noqa: E402
-from cwaves.scripts.iw_cwaves_map import (  # noqa: E402
-    compute_ocn_subswath,
-    plot_map,
-)
 from cwaves.scripts.plot_kernels import (  # noqa: E402
     _apply_style,
     build_kernel_grid,
@@ -68,9 +64,6 @@ CWMAP = mcolors.LinearSegmentedColormap.from_list(
 #: azimuth half-width (rad/m) of the certification display window (beyond it,
 #: there is no signal and no kernel)
 K_Y_BAND = 0.15
-
-#: path of the ESA OCN WV IW osw fixture shipped in ``assets/`` (task-10 map)
-OCN_IW1_NC = REPO_ROOT / "assets" / "s1a-iw1-osw-vv-fixture.nc"
 
 #: real OCN WV + SARWAVE XSP L1B fixtures, from the SAME S1A WV1 acquisition
 #: (2025-05-01, orbit 058996_075117) so the certification rows share a scene.
@@ -127,8 +120,8 @@ def _gen_kernels() -> None:
 
 def _row_arrays(
     xs: xr.DataArray, kmin_: float, kmax: float, n_k: int, n_phi: int
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
-    """Compute the three panel arrays (spec, kernel, integrand) for one spectrum.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """Compute the two data panels (spec, integrand) and the CWAVE value.
 
     The integrand is exactly the pointwise product summed by
     :func:`cwaves.compute_cwave_parameters` :
@@ -143,8 +136,8 @@ def _row_arrays(
         n_phi: number of harmonic basis functions.
 
     Returns:
-        A tuple ``(k_rg_1d, k_az_1d, spec_2d, kernel_2d, integrand_2d, cwave_val)``
-        with the 2-D arrays oriented for plotting (rows = azimuth, cols = range).
+        A tuple ``(k_rg_1d, k_az_1d, spec_2d, integrand_2d, cwave_val)`` with
+        the 2-D arrays oriented for plotting (rows = azimuth, cols = range).
     """
     xs = xs.transpose("freq_sample", "freq_line")
     k_rg_1d = np.asarray(xs.k_rg, dtype=float)
@@ -175,9 +168,55 @@ def _row_arrays(
         k_rg_1d,
         k_az_1d,
         spec.transpose("freq_line", "freq_sample").values,
-        k1.transpose("freq_line", "freq_sample").values,
         integrand.transpose("freq_line", "freq_sample").values,
         cwave_val,
+    )
+
+
+def _common_kernel_field(
+    kmin_: float,
+    kmax_display: float,
+    k_y_band: float,
+    n_k: int,
+    n_phi: int,
+    k_gp: int,
+    phi_hf: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build the (k_gp, phi_hf) kernel on a common regular display grid.
+
+    The display grid spans ``[0, kmax_display]`` in range and
+    ``[-k_y_band, k_y_band]`` in azimuth and is **independent of the
+    cross-spectrum's own azimuth extent** (which is narrow for the SARWAVE XSP
+    but wide for the OCN decodes). Computing the kernel here, rather than on the
+    data grid, gives every decode method the identical, un-truncated kernel
+    contours. The field is masked outside the elliptic domain ``A``.
+
+    Returns:
+        ``(k_rg_2d, k_az_2d, kernel_2d)`` oriented for ``contour`` (rows =
+        azimuth, cols = range), ``kernel_2d`` NaN outside domain ``A``.
+    """
+    k_rg_1d = np.linspace(0.0, kmax_display, 200)
+    k_az_1d = np.linspace(-k_y_band, k_y_band, 200)
+    krg, kaz = np.meshgrid(k_rg_1d, k_az_1d, indexing="ij")
+    kernel = compute_kernel(
+        krg=xr.DataArray(krg, dims=("i", "j")),
+        kaz=xr.DataArray(kaz, dims=("i", "j")),
+        kmin=kmin_,
+        kmax=kmax_display,
+        cwave_Nk=n_k,
+        cwave_Nphi=n_phi,
+    )
+    k1 = kernel["cwave_kernel"].sel(k_gp=k_gp, phi_hf=phi_hf).values
+    mask = domain_mask(
+        xr.DataArray(krg, dims=("i", "j")),
+        xr.DataArray(kaz, dims=("i", "j")),
+        kmin_,
+        kmax_display,
+    ).values
+    return (
+        krg.T,
+        kaz.T,
+        np.where(mask.T, k1.T, np.nan),
     )
 
 
@@ -187,12 +226,14 @@ def _plot_method(
     k_rg_1d,
     k_az_1d,
     spec_2d,
-    kernel_2d,
     integrand_2d,
     cwave_val,
     kmax_display,
     k_y_band,
     title,
+    k_rg_disp,
+    k_az_disp,
+    kernel_disp,
 ):
     """Render the three panels of one decode method on a common display domain.
 
@@ -200,6 +241,8 @@ def _plot_method(
     [-k_y_band, k_y_band]`` (cropped in azimuth, where there is no signal or
     kernel beyond it) and the white->red :data:`CWMAP` colormap (white = zero),
     so the panels are directly comparable and the empty corners read as zero.
+    The kernel contours use a common display grid (:func:`_common_kernel_field`)
+    so they are not truncated by the data's azimuth extent (narrow for XSP).
     """
     pcm = axes[0].pcolormesh(k_rg_1d, k_az_1d, spec_2d, cmap=CWMAP, shading="auto")
     axes[0].set_title(r"cross-spectrum  $|X_S|$")
@@ -209,7 +252,7 @@ def _plot_method(
         k_rg_1d, k_az_1d, spec_2d, cmap=CWMAP, shading="auto", alpha=0.85
     )
     axes[1].contour(
-        k_rg_1d, k_az_1d, kernel_2d, levels=16, colors="0.25", linewidths=1.0
+        k_rg_disp, k_az_disp, kernel_disp, levels=16, colors="0.25", linewidths=1.0
     )
     axes[1].set_title(r"$|X_S|$  + CWAVE kernel  $(k_{gp}=1,\ \varphi_{hf}=1)$")
     fig.colorbar(pcm, ax=axes[1], label=r"$|X_S|$  (a.u.)")
@@ -258,13 +301,16 @@ def _gen_certification() -> None:
         ("OCN WV  cart-sinh  $\\to$ regular", "ocn_sinh", xs_sinh),
         ("SARWAVE L1B  XSP  (2tau)", "xsp", xs_xsp),
     ]
+    # common (un-truncated) kernel field, shared by all three decode methods
+    k_rg_disp, k_az_disp, kernel_disp = _common_kernel_field(
+        kmin_, kmax_display, K_Y_BAND, n_k, n_phi, 1, 1
+    )
     _apply_style()
     for title, fname, xs in methods:
         (
             k_rg_1d,
             k_az_1d,
             spec_2d,
-            kernel_2d,
             integrand_2d,
             cwave_val,
         ) = _row_arrays(xs, kmin_, kmax_display, n_k, n_phi)
@@ -275,12 +321,14 @@ def _gen_certification() -> None:
             k_rg_1d,
             k_az_1d,
             spec_2d,
-            kernel_2d,
             integrand_2d,
             cwave_val,
             kmax_display,
             K_Y_BAND,
             title,
+            k_rg_disp,
+            k_az_disp,
+            kernel_disp,
         )
         fig.savefig(FIG_DIR / f"certification_{fname}.png", bbox_inches="tight")
         plt.close(fig)
@@ -387,7 +435,7 @@ def _gen_certification_all() -> None:
                 k_rg_1d,
                 k_az_1d,
                 integrand,
-                cmap=CWMAP,
+                cmap="bwr",
                 shading="auto",
                 vmin=-vmax,
                 vmax=vmax,
@@ -405,7 +453,7 @@ def _gen_certification_all() -> None:
                 ax.set_ylabel(r"$k_y$ (azimuth) [rad m$^{-1}$]", fontsize=8)
         fig.colorbar(
             plt.cm.ScalarMappable(
-                cmap=CWMAP,
+                cmap="bwr",
                 norm=mcolors.TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax),
             ),
             ax=axes.ravel().tolist(),
@@ -420,31 +468,11 @@ def _gen_certification_all() -> None:
         plt.close(fig)
 
 
-def _gen_map() -> None:
-    """Generate the georeferenced CWAVE map (k_gp=1, phi_hf=1) via task-10 functions.
-
-    Combines the two product families supported by the task-10 script : the ESA
-    OCN WV IW osw fixture (``iw1``) and the SARWAVE L1B XSP fixture (``iw2``).
-    """
-    from cwaves.scripts.iw_cwaves_map import compute_sarwave_subswath
-
-    cfg = get_default_config()["cwave"]
-    kmax = 2.0 * np.pi / cfg["cwave_wlmin"]
-    ocn = compute_ocn_subswath(str(OCN_IW1_NC), "intraburst", 2, kmax, 96)
-    sarwave = compute_sarwave_subswath(
-        str(REPO_ROOT / "assets" / "l1b-s1b-iw2-xsp-fixture.nc"), "intraburst", 2, "VV"
-    )
-    results = {"iw1 (OCN osw)": ocn, "iw2 (SARWAVE xsp)": sarwave}
-    title = "CWAVE (k_gp = 1, phi_hf = 1) - Sentinel-1 IW, intraburst, 2tau"
-    plot_map(results, 1, 1, str(FIG_DIR / "cwave_map_k1_phi1.png"), title)
-
-
 def main() -> None:
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     _gen_kernels()
     _gen_certification()
     _gen_certification_all()
-    _gen_map()
     for f in sorted(FIG_DIR.glob("*.png")):
         print(f"wrote {f} ({f.stat().st_size} bytes)")
 

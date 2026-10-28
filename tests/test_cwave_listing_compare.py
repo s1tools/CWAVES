@@ -141,3 +141,34 @@ def test_entrypoint_missing_safe(tmp_path):
         ]
     )
     assert rc == 1  # nothing processed
+
+
+def test_entrypoint_cases_subset(tmp_path):
+    safe = tmp_path / "S1B_IW_XSP__1SDV_test.SAFE"
+    safe.mkdir()
+    prod = safe / "l1b-s1b-iw1-xsp-1sdv-001.nc"
+    _make_xsp_product(str(prod))
+    listing = tmp_path / "listing.txt"
+    listing.write_text(str(safe) + "\n")
+    out_dir = tmp_path / "out"
+    rc = entrypoint(
+        [
+            "--input-listing",
+            str(listing),
+            "--output-dir",
+            str(out_dir),
+            "--subswath",
+            "iw1",
+            "--cases",
+            "1,1;4,5",
+        ]
+    )
+    assert rc == 0
+    # only the two requested cases are rendered
+    for kg, ph in ((1, 1), (4, 5)):
+        assert (out_dir / f"cwave_map_k{kg}_phi{ph}.png").exists()
+        assert (out_dir / f"compare_cwave_k{kg}_phi{ph}.png").exists()
+    assert not (out_dir / "cwave_map_k2_phi2.png").exists()
+    # the summary lists exactly the requested cases
+    lines = (out_dir / "compare_summary.txt").read_text().strip().splitlines()
+    assert len(lines) == 3  # header + 2 cases

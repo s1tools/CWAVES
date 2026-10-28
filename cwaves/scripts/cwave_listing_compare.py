@@ -244,6 +244,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="number of harmonic basis functions",
     )
+    parser.add_argument(
+        "--cases",
+        default=None,
+        help=(
+            "comma-separated (k_gp,phi_hf) cases to render, e.g. '1,1;2,2;4,5'. "
+            "Default : the full Nk x Nphi grid."
+        ),
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     return parser
 
@@ -338,30 +346,37 @@ def entrypoint(argv: list[str] | None = None) -> int:
     title_base = (
         f"CWAVE (library) - listing {stem}, {args.group}, {args.lag}tau, {args.pol}"
     )
+    # (k_gp, phi_hf) cases to render : the full grid unless --cases is given
+    if args.cases:
+        cases = [
+            (int(a), int(b)) for a, b in (c.split(",") for c in args.cases.split(";"))
+        ]
+    else:
+        cases = [(kg, ph) for kg in range(1, n_k + 1) for ph in range(1, n_phi + 1)]
+
     stats: list[dict[str, float]] = []
-    for kg in range(1, n_k + 1):
-        for ph in range(1, n_phi + 1):
-            # 1. georeferenced map of the library value
-            map_png = out_dir / f"cwave_map_k{kg}_phi{ph}.png"
-            _plot_cwave_map(
-                combined, kg, ph, str(map_png), f"{title_base}\nk_gp={kg}, phi_hf={ph}"
-            )
-            # 2. old-vs-new scatter
-            old = np.concatenate(old_acc.get((kg, ph), []))
-            new = np.concatenate(new_acc.get((kg, ph), []))
-            scatter_png = out_dir / f"compare_cwave_k{kg}_phi{ph}.png"
-            st = _plot_scatter(old, new, kg, ph, str(scatter_png))
-            st.update({"k_gp": kg, "phi_hf": ph})
-            stats.append(st)
-            logger.info(
-                "k_gp=%d phi_hf=%d: n=%d r=%.3f bias=%+.3f std=%.3f",
-                kg,
-                ph,
-                st["n"],
-                st["r"],
-                st["bias"],
-                st["std"],
-            )
+    for kg, ph in cases:
+        # 1. georeferenced map of the library value
+        map_png = out_dir / f"cwave_map_k{kg}_phi{ph}.png"
+        _plot_cwave_map(
+            combined, kg, ph, str(map_png), f"{title_base}\nk_gp={kg}, phi_hf={ph}"
+        )
+        # 2. old-vs-new scatter
+        old = np.concatenate(old_acc.get((kg, ph), []))
+        new = np.concatenate(new_acc.get((kg, ph), []))
+        scatter_png = out_dir / f"compare_cwave_k{kg}_phi{ph}.png"
+        st = _plot_scatter(old, new, kg, ph, str(scatter_png))
+        st.update({"k_gp": float(kg), "phi_hf": float(ph)})
+        stats.append(st)
+        logger.info(
+            "k_gp=%d phi_hf=%d: n=%d r=%.3f bias=%+.3f std=%.3f",
+            kg,
+            ph,
+            st["n"],
+            st["r"],
+            st["bias"],
+            st["std"],
+        )
 
     # write a small summary table
     summary = out_dir / "compare_summary.txt"
@@ -369,10 +384,10 @@ def entrypoint(argv: list[str] | None = None) -> int:
         fh.write("k_gp  phi_hf  n      r        bias      std\n")
         for st in stats:
             fh.write(
-                f"{st['k_gp']:<5} {st['phi_hf']:<7} {st['n']:<6} "
+                f"{st['k_gp']:<5.0f} {st['phi_hf']:<7.0f} {st['n']:<6.0f} "
                 f"{st['r']:9.4f} {st['bias']:9.4f} {st['std']:9.4f}\n"
             )
-    logger.info("wrote %d maps + %d scatters to %s", n_k * n_phi, n_k * n_phi, out_dir)
+    logger.info("wrote %d maps + %d scatters to %s", len(cases), len(cases), out_dir)
     return 0
 
 
