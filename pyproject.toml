@@ -77,6 +77,7 @@ documentation = "https://cwaves.readthedocs.io"
 cwaves-osw = "cwaves.client:entrypoint"
 cwaves-kernels = "cwaves.scripts.plot_kernels:entrypoint"
 cwaves-listing-compare = "cwaves.scripts.cwave_listing_compare:entrypoint"
+cwaves-certification-report = "cwaves.scripts.cwave_certification_report:entrypoint"
 
 [tool.hatch.metadata]
 allow-direct-references = true
