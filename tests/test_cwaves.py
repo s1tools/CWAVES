@@ -19,6 +19,7 @@ from cwaves import (
     load_config,
     symmetrize_xspectrum,
 )
+from cwaves.client import _l1b_cross_spectrum
 
 # =============================================================================
 # Public API / basic values
@@ -266,3 +267,156 @@ def test_compute_kernel_save(tmp_path, monkeypatch):
         save_cwave_kernel=True,
     )
     assert (tmp_path / "cwaves_kernel.nc").exists()
+
+
+# =============================================================================
+# Round-trip (back-and-forth) reconstruction — issue #6
+# =============================================================================
+#
+# Decompose a real WV cross-spectrum (the SARWave L1B XSP fixture) into CWAVE
+# parameters, reconstruct the spectrum from the parameters and the kernels,
+# and compare the reconstruction with the original. A perfect reconstruction
+# is not expected (finite kernel truncation): the tolerances below are the
+# decided pixel-to-pixel thresholds. The fixture grid (65 x 128 = 8320
+# pixels) is far larger than the number of CWAVE coefficients (default
+# 4 x 5 = 20), so the projection is well sampled.
+
+
+def _normalized_spectrum(xs, kmin, kmax):
+    """Return the normalized |xs| density projected by ``compute_cwave_parameters``.
+
+    Mirrors the documented input contract (``repository_specifications.md``
+    section 6): mask to the annulus ``kmin < kk < kmax``, drop fully masked
+    rows/columns, take the real modulus, and normalize to unit mass.
+
+    Args:
+        xs: complex one-sided cross-spectrum (``k_rg >= 0``).
+        kmin: minimum wavenumber (``2 pi / cwave_wlmax``).
+        kmax: maximum wavenumber (``2 pi / cwave_wlmin``).
+
+    Returns:
+        (xr.DataArray, float): the normalized density and the cell area
+        ``dkrg * dkaz`` of the uniform wavenumber grid.
+    """
+    kk = np.sqrt(xs.k_rg**2 + xs.k_az**2)
+    xxs = xs.where((kk > kmin) & (kk < kmax))
+    xxs = xxs.dropna(dim="freq_line", how="all").dropna(dim="freq_sample", how="all")
+    xxsm = np.abs(xxs)
+    dkrg = float(xxs.k_rg.diff(dim="freq_sample").mean(dim="freq_sample"))
+    dkaz = float(xxs.k_az.diff(dim="freq_line").mean(dim="freq_line"))
+    xxsmn = xxsm / (xxsm.sum(dim=["freq_line", "freq_sample"]) * dkrg * dkaz)
+    return xxsmn, dkrg * dkaz
+
+
+def _reconstruct(xs, nk, nphi, wlmax=600.0, wlmin=25.0):
+    """Decompose ``xs`` and reconstruct the normalized spectrum from the CWAVES.
+
+    Args:
+        xs: complex one-sided cross-spectrum (``k_rg >= 0``).
+        nk: number of Gegenbauer basis functions (``cwave_Nk``).
+        nphi: number of harmonic basis functions (``cwave_Nphi``).
+        wlmax: maximum wavelength in meters.
+        wlmin: minimum wavelength in meters.
+
+    Returns:
+        (xr.DataArray, xr.DataArray): the reconstructed density
+        ``sum(cwave_params * cwave_kernel)`` and the CWAVE parameters.
+    """
+    kmin, kmax = 2.0 * np.pi / wlmax, 2.0 * np.pi / wlmin
+    cp = compute_cwave_parameters(
+        xs, cwave_wlmax=wlmax, cwave_wlmin=wlmin, cwave_Nk=nk, cwave_Nphi=nphi
+    )
+    kernel = compute_kernel(xs.k_rg, xs.k_az, kmin, kmax, cwave_Nk=nk, cwave_Nphi=nphi)
+    fhat = (kernel["cwave_kernel"] * cp).sum(dim=["k_gp", "phi_hf"])
+    return fhat, cp
+
+
+def _load_l1b_xs(l1b_xsp_nc):
+    """Load the one-sided 2-tau cross-spectrum from the L1B XSP fixture."""
+    with xr.open_dataset(l1b_xsp_nc) as ds:
+        return _l1b_cross_spectrum(ds, lag=2, time_idx=0, pol_idx=0)
+
+
+def _capture(f, fhat):
+    """Fraction of the domain-A energy captured by the reconstruction."""
+    err = f - fhat  # xarray aligns the two by coordinates
+    fv = np.asarray(f, dtype=float)
+    ev = np.asarray(err, dtype=float)
+    return 1.0 - float(np.nansum(ev**2) / np.nansum(fv**2))
+
+
+def test_cwave_roundtrip_reconstruction(l1b_xsp_nc):
+    """Back-and-forth: decompose a real WV cross-spectrum and reconstruct it.
+
+    The reconstruction error is dominated by the finite kernel truncation
+    (default 4 x 5 = 20 coefficients): the median pixel error is well below
+    1 % of the spectral peak, while the few pixels at the peak carry the
+    truncation error. The thresholds below are the decided pixel-to-pixel
+    tolerances (issue #6).
+    """
+    xs = _load_l1b_xs(l1b_xsp_nc)
+    kmin, kmax = 2.0 * np.pi / 600.0, 2.0 * np.pi / 25.0
+    f, _ = _normalized_spectrum(xs, kmin, kmax)
+    fhat, _ = _reconstruct(xs, 4, 5)
+
+    err = f - fhat
+    fv = np.asarray(f, dtype=float)
+    ev = np.asarray(err, dtype=float)
+    fmax = float(np.nanmax(fv))
+    rel_l2 = float(np.sqrt(np.nansum(ev**2) / np.nansum(fv**2)))
+    max_pix = float(np.nanmax(np.abs(ev)) / fmax)
+    valid = ~np.isnan(ev)
+    within_half_peak = float(np.mean(np.abs(ev[valid]) <= 0.5 * fmax))
+
+    # global (relative L2) reconstruction error
+    assert rel_l2 < 0.65
+    # pixel-to-pixel: the worst pixel stays below 90 % of the spectral peak
+    assert max_pix < 0.9
+    # and the overwhelming majority of pixels are reconstructed within
+    # 50 % of the peak
+    assert within_half_peak > 0.95
+    # a substantial fraction of the domain-A energy is captured
+    assert _capture(f, fhat) > 0.5
+
+
+def test_cwave_roundtrip_energy_balance(l1b_xsp_nc):
+    """The round trip satisfies the discrete Parseval energy balance.
+
+    For an orthonormal kernel basis the CWAVE coefficients ``c_i`` and the
+    reconstruction residual obey ``||f - fhat||^2 = ||f||^2 - sum_i c_i^2``
+    (discrete Parseval identity). This validates that the decomposition and
+    the reconstruction use the same orthonormal kernels and the same
+    quadrature, independently of the spectrum smoothness.
+    """
+    xs = _load_l1b_xs(l1b_xsp_nc)
+    kmin, kmax = 2.0 * np.pi / 600.0, 2.0 * np.pi / 25.0
+    f, cell_area = _normalized_spectrum(xs, kmin, kmax)
+    fhat, cp = _reconstruct(xs, 4, 5)
+
+    err = f - fhat
+    fv = np.asarray(f, dtype=float)
+    ev = np.asarray(err, dtype=float)
+    norm2 = float(np.nansum(fv**2) * cell_area)
+    sum_c2 = float(np.sum(np.asarray(cp, dtype=float) ** 2))
+    resid2 = float(np.nansum(ev**2) * cell_area)
+
+    assert abs(resid2 - (norm2 - sum_c2)) < 0.05 * norm2
+
+
+def test_cwave_roundtrip_convergence(l1b_xsp_nc):
+    """Captured energy is non-decreasing when the kernel set is enlarged.
+
+    The kernel sets (4, 5) < (4, 8) < (8, 12) are nested, so the truncated
+    expansion captures at least as much of the spectrum energy as the
+    coarser one: the decomposition converges to the original spectrum as
+    the number of CWAVE coefficients grows.
+    """
+    xs = _load_l1b_xs(l1b_xsp_nc)
+    kmin, kmax = 2.0 * np.pi / 600.0, 2.0 * np.pi / 25.0
+    f, _ = _normalized_spectrum(xs, kmin, kmax)
+    captures = []
+    for nk, nphi in ((4, 5), (4, 8), (8, 12)):
+        fhat, _ = _reconstruct(xs, nk, nphi)
+        captures.append(_capture(f, fhat))
+    assert captures[0] <= captures[1] + 0.01
+    assert captures[1] <= captures[2] + 0.01
