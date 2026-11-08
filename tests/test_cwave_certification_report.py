@@ -6,6 +6,8 @@ real asset. The pure helpers (basis parsing, normalized density, per-basis
 sweep, figures, HTML assembly) are tested on a synthetic cross-spectrum.
 """
 
+from typing import Any
+
 import numpy as np
 import pytest
 import xarray as xr
@@ -14,6 +16,7 @@ from cwaves.scripts.cwave_certification_report import (
     _fig_basis_panel,
     _fig_curves,
     _fmt_pct,
+    _l1b_cross_spectrum_compat,
     _normalized_density,
     _parse_bases,
     _png_bytes,
@@ -80,7 +83,45 @@ def _make_xsp_product(path: str) -> None:
     ds.to_netcdf(path)
 
 
-def _res(nk: int, nphi: int, rel_l2: float) -> dict[str, object]:
+def _make_xsp_product_envisat(path: str) -> None:
+    """Write a minimal xsar_slc-style L1C product (singleton tile dims)."""
+    n_time, n_pol, n_lag = 1, 1, 1
+    n_fr, n_fs = 25, 40
+    k_rg_1d = np.linspace(0.0, 0.4, n_fs)
+    k_az_1d = np.linspace(-0.15, 0.15, n_fr)
+    krg, kaz = np.meshgrid(k_rg_1d, k_az_1d, indexing="xy")
+    kk = np.hypot(krg, kaz)
+    re = np.exp(-(((kk - 0.10) / 0.04) ** 2))[None, :, :, None, None]
+    im = np.full((n_fr, n_fs), 0.02)[None, :, :, None, None]
+    ds = xr.Dataset(
+        {
+            "xspectra_2tau_Re": (
+                ("time", "freq_line", "freq_sample", "pol", "2tau"),
+                np.broadcast_to(re, (n_time, n_fr, n_fs, n_pol, n_lag)).astype(
+                    np.float32
+                ),
+            ),
+            "xspectra_2tau_Im": (
+                ("time", "freq_line", "freq_sample", "pol", "2tau"),
+                np.broadcast_to(im, (n_time, n_fr, n_fs, n_pol, n_lag)).astype(
+                    np.float32
+                ),
+            ),
+            "k_rg": (
+                ("time", "tile_sample", "tile_line", "freq_sample"),
+                np.broadcast_to(k_rg_1d, (n_time, 1, 1, n_fs)).astype(np.float32),
+            ),
+            "k_az": (
+                ("time", "tile_sample", "tile_line", "freq_line"),
+                np.broadcast_to(k_az_1d, (n_time, 1, 1, n_fr)).astype(np.float32),
+            ),
+        },
+        coords={"pol": ["VV"], "tile_sample": [0], "tile_line": [0]},
+    )
+    ds.to_netcdf(path)
+
+
+def _res(nk: int, nphi: int, rel_l2: float) -> dict[str, int | float]:
     """Build a minimal sweep-result row for the HTML tests."""
     return {
         "nk": nk,
@@ -210,9 +251,32 @@ def test_fig_basis_panel_and_curves():
 # ---------------------------------------------------------------------------
 
 
+def _prod(
+    name: str, results: list[dict[str, int | float]], **kw: Any
+) -> dict[str, Any]:
+    """Build a minimal product dict for the HTML tests."""
+    results = list(results)
+    best = min(results, key=lambda r: r["rel_l2"])
+    ref = next((r for r in results if (r["nk"], r["nphi"]) == (32, 30)), None)
+    defaults: dict[str, Any] = {
+        "results": results,
+        "panels": [],
+        "curves_png": b"png",
+        "kmax_display": 0.25,
+        "grid_shape": (25, 40),
+        "n_pixels": 1000,
+        "best": best,
+        "best_near": best,
+        "near": [r for r in results if 780 <= r["n_coeffs"] <= 1200],
+        "ref_val": ref["rel_l2"] if ref is not None else 0.1533,
+    }
+    defaults.update(kw)
+    return {"name": name, **defaults}
+
+
 def test_build_html_beats_reference():
     results = [_res(32, 30, 0.1533), _res(30, 28, 0.145)]
-    html = _build_html(results, b"png", [], 0.25, (25, 40), 1000, "x.nc")
+    html = _build_html([_prod("x.nc", results)], 600.0, 25.0)
     assert "does" in html
     assert "percentage points" in html
     # both rows rendered, the reference row tagged
@@ -222,20 +286,20 @@ def test_build_html_beats_reference():
 
 def test_build_html_plateau():
     results = [_res(32, 30, 0.1533), _res(32, 32, 0.1529)]
-    html = _build_html(results, b"png", [], 0.25, (25, 40), 1000, "x.nc")
+    html = _build_html([_prod("x.nc", results)], 600.0, 25.0)
     assert "flat plateau" in html
     assert "No basis close to 32 x 30 beats it" in html
 
 
 def test_build_html_no_beat():
     results = [_res(32, 30, 0.1533), _res(30, 32, 0.1553)]
-    html = _build_html(results, b"png", [], 0.25, (25, 40), 1000, "x.nc")
+    html = _build_html([_prod("x.nc", results)], 600.0, 25.0)
     assert "no basis in that window" in html
 
 
 def test_build_html_without_reference_row():
     results = [_res(2, 3, 0.4), _res(4, 5, 0.3)]
-    html = _build_html(results, b"png", [], 0.25, (25, 40), 1000, "x.nc")
+    html = _build_html([_prod("x.nc", results)], 600.0, 25.0)
     # the reference value falls back to the constant (15.33 %)
     assert "15.33%" in html
     assert "32x30 ref" not in html
@@ -246,8 +310,48 @@ def test_build_html_without_reference_row():
 def test_build_html_gallery():
     results = [_res(2, 3, 0.4), _res(4, 5, 0.3)]
     panels = [(results[0], b"aaa"), (results[1], b"bbb")]
-    html = _build_html(results, b"png", panels, 0.25, (25, 40), 1000, "x.nc")
+    html = _build_html([_prod("x.nc", results, panels=panels)], 600.0, 25.0)
     assert html.count("data:image/png;base64,") == 3  # 2 panels + curves
+
+
+def test_build_html_multi_product():
+    p1 = _prod("s1a.nc", [_res(32, 30, 0.1533), _res(32, 32, 0.1529)])
+    p2 = _prod("envisat.nc", [_res(32, 30, 0.1533), _res(30, 30, 0.1528)])
+    html = _build_html([p1, p2], 600.0, 25.0)
+    # one section per product
+    assert 'class="product"' in html
+    assert "s1a.nc" in html
+    assert "envisat.nc" in html
+    # the unified finding lists one verdict per product
+    assert html.count("<li>") == 2
+    assert "flat plateau" in html
+    # the unified closing is present because every product is flat
+    assert "not of a single product" in html
+    # the footer lists both source products
+    assert "<code>s1a.nc</code>, <code>envisat.nc</code>" in html
+    # the wavelength window is rendered from wlmax / wlmin
+    assert "2&pi;/600" in html
+    assert "2&pi;/25" in html
+    # one curves figure per product + two tables
+    assert html.count("data:image/png;base64,") == 2
+    assert html.count("<table>") == 2
+
+
+def test_build_html_multi_product_not_all_flat():
+    p1 = _prod("s1a.nc", [_res(32, 30, 0.1533), _res(32, 32, 0.1529)])
+    p2 = _prod("envisat.nc", [_res(32, 30, 0.1533), _res(30, 28, 0.145)])
+    html = _build_html([p1, p2], 600.0, 25.0)
+    # one product clearly beats the reference
+    assert "beats the 15.33% reference by 0.83 pp" in html
+    # but no unified closing since not every product is flat
+    assert "not of a single product" not in html
+
+
+def test_build_html_single_product_no_closing():
+    p1 = _prod("s1a.nc", [_res(32, 30, 0.1533), _res(30, 28, 0.145)])
+    html = _build_html([p1], 600.0, 25.0)
+    # no multi-product closing for a single product
+    assert "not of a single product" not in html
 
 
 # ---------------------------------------------------------------------------
@@ -323,3 +427,58 @@ def test_entrypoint_odd_bases(tmp_path):
         ["--xsp-nc", str(nc), "--output-dir", str(tmp_path / "out"), "--bases", "2 3 4"]
     )
     assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# Envisat / xsar_slc L1C schema (singleton tile dims)
+# ---------------------------------------------------------------------------
+
+
+def test_compat_l1c_schema(tmp_path):
+    nc = tmp_path / "envisat.nc"
+    _make_xsp_product_envisat(str(nc))
+    with xr.open_dataset(nc) as ds:
+        xs = _l1b_cross_spectrum_compat(ds, lag=2)
+    # the tile_sample / tile_line dims are squeezed away
+    assert xs.dims == ("freq_line", "freq_sample")
+    assert xs["k_rg"].dims == ("freq_sample",)
+    assert xs["k_az"].dims == ("freq_line",)
+    assert xs.shape == (25, 40)
+    assert np.iscomplexobj(xs.values)
+
+
+def test_compat_l1b_schema(tmp_path):
+    # the SARWAVE L1B schema (no tile dims) goes through the same path
+    nc = tmp_path / "s1a.nc"
+    _make_xsp_product(str(nc))
+    with xr.open_dataset(nc) as ds:
+        xs = _l1b_cross_spectrum_compat(ds, lag=2)
+    assert xs.dims == ("freq_line", "freq_sample")
+    assert xs.shape == (25, 40)
+
+
+def test_entrypoint_multi_product(tmp_path):
+    nc1 = tmp_path / "s1a.nc"
+    nc2 = tmp_path / "envisat.nc"
+    _make_xsp_product(str(nc1))
+    _make_xsp_product_envisat(str(nc2))
+    out_dir = tmp_path / "out"
+    rc = entrypoint(
+        [
+            "--xsp-nc",
+            str(nc1),
+            str(nc2),
+            "--output-dir",
+            str(out_dir),
+            "--bases",
+            "2 3",
+        ]
+    )
+    assert rc == 0
+    html = (out_dir / "index.html").read_text()
+    # one section per product, both in the summary list and the footer
+    assert html.count('class="product"') == 2
+    assert "s1a.nc" in html
+    assert "envisat.nc" in html
+    # one panel + one curves figure per product
+    assert html.count("data:image/png;base64,") == 4

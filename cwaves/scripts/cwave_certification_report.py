@@ -1,9 +1,10 @@
 """Generate a self-contained HTML report certifying the CWAVE round trip.
 
 The report sweeps a set of CWAVE kernel basis sizes ``(Nk, Nphi)``, decomposes
-the real SARWAVE L1B WV cross-spectrum into CWAVE coefficients for each size,
-recomposes the spectrum from the coefficients x kernels, and measures how well
-the recomposition matches the original. It then renders:
+each real SAR ocean cross-spectrum (one section per product) into CWAVE
+coefficients for each size, recomposes the spectrum from the coefficients x
+kernels, and measures how well the recomposition matches the original. It
+then renders:
 
 * a **metrics table** (one row per basis): relative L2 error, captured L2
   energy, worst-pixel error, fraction of pixels within half the spectral peak,
@@ -16,6 +17,13 @@ the recomposition matches the original. It then renders:
 
 The whole report is written as a **single self-contained ``index.html``** (all
 figures embedded as base64 PNGs) so it can be published or shared as one file.
+
+Any cross-spectrum NetCDF product with the ``xspectra_{lag}tau_Re/Im`` and
+``k_rg``/``k_az`` schema is accepted : both the SARWAVE L1B XSP and the
+historical Envisat ASAR WVI XSP L1C (xsar_slc, whose ``k_rg``/``k_az`` carry
+singleton ``tile_sample``/``tile_line`` dimensions). Several products can be
+passed to ``--xsp-nc``; the report carries one section per product plus a
+unified top-level finding.
 
 This is the interactive companion of the round-trip unit tests
 (``tests/test_cwaves.py::test_cwave_roundtrip_*``) and of the
@@ -31,6 +39,9 @@ Usage::
     # custom basis sweep (Nk Nphi pairs, space separated) :
     python -m cwaves.scripts.cwave_certification_report \
         --output-dir report --bases "4 5 8 8 16 16 32 30"
+    # several products, one report section each :
+    python -m cwaves.scripts.cwave_certification_report \
+        --output-dir report --xsp-nc s1a_wv1_xsp.nc envisat_wvi_xsp_l1c.nc
 """
 
 import argparse
@@ -51,7 +62,6 @@ import numpy as np  # noqa: E402
 import xarray as xr  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 
-from cwaves.client import _l1b_cross_spectrum  # noqa: E402
 from cwaves.compute_cwaves import compute_kernel  # noqa: E402
 from cwaves.config import get_default_config  # noqa: E402
 from cwaves.scripts.plot_kernels import _apply_style  # noqa: E402
@@ -128,6 +138,49 @@ def _setup_logging(verbose: bool) -> None:
         handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
         logger.addHandler(handler)
         logger.propagate = False
+
+
+def _l1b_cross_spectrum_compat(
+    ds: xr.Dataset, lag: int, time_idx: int = 0, pol_idx: int = 0
+) -> xr.DataArray:
+    """Build the complex one-sided cross-spectrum for one time slice.
+
+    Same contract as ``cwaves.client._l1b_cross_spectrum`` but tolerant of the
+    historical Envisat ASAR WVI XSP L1C (xsar_slc) schema, whose ``k_rg`` /
+    ``k_az`` carry singleton ``tile_sample`` / ``tile_line`` dimensions that
+    are squeezed before the ``(freq_line, freq_sample)`` spectrum is built.
+
+    Args:
+        ds: open ``xarray.Dataset`` with the ``xspectra_{lag}tau_Re/Im`` and
+            ``k_rg`` / ``k_az`` variables.
+        lag: cross-spectrum lag (1 or 2).
+        time_idx: time slice index.
+        pol_idx: polarization index.
+
+    Returns:
+        The complex one-sided cross-spectrum, dims ``(freq_line, freq_sample)``.
+    """
+    re = (
+        ds[f"xspectra_{lag}tau_Re"]
+        .isel(time=time_idx, pol=pol_idx, drop=True)
+        .mean(dim=f"{lag}tau")
+    )
+    im = (
+        ds[f"xspectra_{lag}tau_Im"]
+        .isel(time=time_idx, pol=pol_idx, drop=True)
+        .mean(dim=f"{lag}tau")
+    )
+    k_rg = np.squeeze(
+        np.asarray(ds["k_rg"].isel(time=time_idx, drop=True).values, dtype=float)
+    )
+    k_az = np.squeeze(
+        np.asarray(ds["k_az"].isel(time=time_idx, drop=True).values, dtype=float)
+    )
+    return (
+        (re + 1j * im)
+        .assign_coords(k_rg=("freq_sample", k_rg), k_az=("freq_line", k_az))
+        .rename(f"xspectra_{lag}tau")
+    )
 
 
 def _normalized_density(xs: xr.DataArray, kmin: float, kmax: float) -> xr.DataArray:
@@ -333,30 +386,20 @@ def _fmt_pct(x: float) -> str:
     return f"{x:.2%}"
 
 
-def _build_html(
-    results: list[dict[str, Any]],
-    curves_png: bytes,
-    panels: list[tuple[dict[str, Any], bytes]],
-    kmax_display: float,
-    grid_shape: tuple[int, int],
-    n_pixels: int,
-    xsp_name: str,
-) -> str:
-    """Assemble the self-contained HTML report."""
-    order = sorted(results, key=lambda r: (r["n_coeffs"], r["nk"]))
-    best = min(results, key=lambda r: r["rel_l2"])
-    near = [r for r in results if NEAR_NMIN <= r["n_coeffs"] <= NEAR_NMAX]
-    # a custom ``--bases`` sweep may contain no basis in the "near 32 x 30"
-    # window : fall back to the overall best so the report stays self-consistent
-    best_near = min(near, key=lambda r: r["rel_l2"]) if near else best
-    ref_row = next(
-        (r for r in results if (r["nk"], r["nphi"]) == REFERENCE_BASIS), None
-    )
-    ref_val = ref_row["rel_l2"] if ref_row is not None else REFERENCE_RELL2
-    ref_txt = _fmt_pct(ref_val)
-    # margin, in percentage points, of the best basis over the reference basis
-    best_margin_pp = (ref_val - best["rel_l2"]) * 100.0
-    if near:
+def _near_margin_pp(prod: dict[str, Any]) -> float:
+    """Margin, in percentage points, of the best near-window basis over the
+    reference value (negative when the reference is the best of the window)."""
+    best_near: dict[str, Any] = prod["best_near"]
+    return float((prod["ref_val"] - best_near["rel_l2"]) * 100.0)
+
+
+def _product_answer(prod: dict[str, Any]) -> str:
+    """Build the detailed key-finding paragraph for one product."""
+    best: dict[str, Any] = prod["best"]
+    best_near: dict[str, Any] = prod["best_near"]
+    ref_txt = _fmt_pct(prod["ref_val"])
+    near_margin_pp = _near_margin_pp(prod)
+    if prod["near"]:
         near_prefix = (
             f"Close to the 32 x 30 reference (between {NEAR_NMIN} and "
             f"{NEAR_NMAX} coefficients) the best is "
@@ -366,6 +409,61 @@ def _build_html(
             "No basis of the sweep falls in the near-reference window "
             f"({NEAR_NMIN}-{NEAR_NMAX} coefficients); the overall best is "
         )
+
+    answer = (
+        f"The smallest relative L2 error over the whole sweep is "
+        f"<strong>{_fmt_pct(best['rel_l2'])}</strong> at "
+        f"<strong>{best['nk']} x {best['nphi']}</strong> "
+        f"({best['n_coeffs']} coefficients). "
+    )
+    if near_margin_pp >= PLATEAU_PP:
+        answer += (
+            f"{near_prefix}"
+            f"<strong>{_fmt_pct(best_near['rel_l2'])}</strong> at "
+            f"<strong>{best_near['nk']} x {best_near['nphi']}</strong> "
+            f"({best_near['n_coeffs']} coefficients) : a basis close to 32 x 30 "
+            f"<strong>does</strong> beat the {ref_txt} reference value by "
+            f"{near_margin_pp:.2f} percentage points."
+        )
+    elif near_margin_pp > 0:
+        answer += (
+            f"{near_prefix}"
+            f"<strong>{_fmt_pct(best_near['rel_l2'])}</strong> at "
+            f"<strong>{best_near['nk']} x {best_near['nphi']}</strong> "
+            f"({best_near['n_coeffs']} coefficients) : it is only "
+            f"{near_margin_pp:.2f} percentage points below the {ref_txt} "
+            f"reference value, i.e. the error is on a <strong>flat plateau</strong> "
+            f"around ~{ref_txt} for all bases near 960 coefficients. No basis "
+            f"close to 32 x 30 beats it in any meaningful way."
+        )
+    else:
+        answer += (
+            f"{near_prefix}"
+            f"<strong>{_fmt_pct(best_near['rel_l2'])}</strong> at "
+            f"<strong>{best_near['nk']} x {best_near['nphi']}</strong> "
+            f"({best_near['n_coeffs']} coefficients) : no basis in that window "
+            f"beats the {ref_txt} reference value, which remains the practical "
+            f"best reachable on this product."
+        )
+    return answer
+
+
+def _product_verdict(prod: dict[str, Any]) -> str:
+    """One-line verdict of the best near-window basis vs the reference."""
+    ref_txt = _fmt_pct(prod["ref_val"])
+    margin = _near_margin_pp(prod)
+    if margin >= PLATEAU_PP:
+        return f"beats the {ref_txt} reference by {margin:.2f} pp"
+    if margin > 0:
+        return f"flat plateau ({margin:.2f} pp below the {ref_txt} reference)"
+    return f"no basis beats the {ref_txt} reference"
+
+
+def _product_section(prod: dict[str, Any]) -> str:
+    """Assemble the per-product section (finding, curves, table, gallery)."""
+    results: list[dict[str, Any]] = prod["results"]
+    best: dict[str, Any] = prod["best"]
+    order = sorted(results, key=lambda r: (r["n_coeffs"], r["nk"]))
 
     rows = []
     for r in order:
@@ -401,7 +499,7 @@ def _build_html(
         )
 
     gallery = []
-    for res, png in panels:
+    for res, png in prod["panels"]:
         b64 = base64.b64encode(png).decode("ascii")
         gallery.append(
             "<figure class='panel'><img alt='basis {nk}x{nphi}' "
@@ -409,44 +507,110 @@ def _build_html(
                 nk=res["nk"], nphi=res["nphi"], b64=b64
             )
         )
-    curves_b64 = base64.b64encode(curves_png).decode("ascii")
+    curves_b64 = base64.b64encode(prod["curves_png"]).decode("ascii")
+    answer = _product_answer(prod)
+    grid_shape = prod["grid_shape"]
+    n_pixels = prod["n_pixels"]
+    kmax_display = prod["kmax_display"]
+
+    return f"""
+  <h2 class="product">{prod["name"]}</h2>
+  <p class="sub">{grid_shape[0]} x {grid_shape[1]} product grid
+  ({n_pixels} pixels), one-sided cross-spectrum (lag 2, first time slice),
+  display window k<sub>x</sub> &isin; [0, {kmax_display:.4f}] rad/m.</p>
+  <div class="card findings">
+    <h3 style="margin-top:0">Key finding</h3>
+    <p>{answer}</p>
+  </div>
+  <h3>Convergence curves</h3>
+  <div class="card curves">
+    <img alt="convergence curves {prod["name"]}"
+         src="data:image/png;base64,{curves_b64}">
+  </div>
+  <h3>Metrics per basis</h3>
+  <div class="card" style="padding:0; overflow:auto;">
+    <table>
+      <thead><tr>
+        <th>basis (N<sub>k</sub> &times; N<sub>&phi;</sub>)</th><th># coeffs</th>
+        <th>rel. L2 error</th><th>captured L2 energy</th>
+        <th>worst pixel / peak</th><th>pixels within 50 % peak</th>
+        <th>Parseval residual</th><th></th>
+      </tr></thead>
+      <tbody>
+        {"".join(rows)}
+      </tbody>
+    </table>
+  </div>
+  <h3>Recomposition and difference with the original</h3>
+  <p class="sub">For each basis : the recomposed spectrum (left, white&rarr;red,
+  shared scale) and the pointwise difference recomposed &minus; original (right,
+  diverging scale, auto-limited to the max residual). The shrinking difference
+  panels and the residual fine structure are the visual signature of the
+  orthogonal projection converging to the in-span part of the spectrum.</p>
+  <div class="gallery">
+    {"".join(gallery)}
+  </div>
+"""
+
+
+def _build_html(products: list[dict[str, Any]], wlmax: float, wlmin: float) -> str:
+    """Assemble the self-contained HTML report (one section per product)."""
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    answer = (
-        f"The smallest relative L2 error over the whole sweep is "
-        f"<strong>{_fmt_pct(best['rel_l2'])}</strong> at "
-        f"<strong>{best['nk']} x {best['nphi']}</strong> "
-        f"({best['n_coeffs']} coefficients). "
-    )
-    if best_margin_pp >= PLATEAU_PP:
-        answer += (
-            f"{near_prefix}"
-            f"<strong>{_fmt_pct(best_near['rel_l2'])}</strong> at "
-            f"<strong>{best_near['nk']} x {best_near['nphi']}</strong> "
-            f"({best_near['n_coeffs']} coefficients) : a basis close to 32 x 30 "
-            f"<strong>does</strong> beat the {ref_txt} reference value by "
-            f"{best_margin_pp:.2f} percentage points."
+    summaries: list[str] = []
+    for prod in products:
+        best: dict[str, Any] = prod["best"]
+        best_near: dict[str, Any] = prod["best_near"]
+        if prod["near"]:
+            near_txt = (
+                "near 32 x 30 ("
+                f"{NEAR_NMIN}-{NEAR_NMAX} coeffs) "
+                "<strong>{nr2}</strong> at {nrk} x {nrphi} "
+                "({nrn} coeffs) &mdash; {verdict}."
+            ).format(
+                nr2=_fmt_pct(best_near["rel_l2"]),
+                nrk=best_near["nk"],
+                nrphi=best_near["nphi"],
+                nrn=best_near["n_coeffs"],
+                verdict=_product_verdict(prod),
+            )
+        else:
+            near_txt = (
+                "no basis of the sweep falls in the near-reference window "
+                f"({NEAR_NMIN}-{NEAR_NMAX} coeffs) &mdash; the overall best is "
+                "the practical best."
+            )
+        summaries.append(
+            "<li><strong>{name}</strong> : overall best "
+            "<strong>{r2}</strong> at {nk} x {nphi} ({n} coeffs) ; "
+            "{near}</li>".format(
+                name=prod["name"],
+                r2=_fmt_pct(best["rel_l2"]),
+                nk=best["nk"],
+                nphi=best["nphi"],
+                n=best["n_coeffs"],
+                near=near_txt,
+            )
         )
-    elif best_margin_pp > 0:
-        answer += (
-            f"{near_prefix}"
-            f"<strong>{_fmt_pct(best_near['rel_l2'])}</strong> at "
-            f"<strong>{best_near['nk']} x {best_near['nphi']}</strong> "
-            f"({best_near['n_coeffs']} coefficients) : it is only "
-            f"{best_margin_pp:.2f} percentage points below the {ref_txt} "
-            f"reference value, i.e. the error is on a <strong>flat plateau</strong> "
-            f"around ~{ref_txt} for all bases near 960 coefficients. No basis "
-            f"close to 32 x 30 beats it in any meaningful way."
+    n_products = len(products)
+    all_flat = all(
+        (not prod["near"]) or _near_margin_pp(prod) < PLATEAU_PP for prod in products
+    )
+    if n_products > 1 and all_flat:
+        closing = (
+            f"Across all {n_products} products the same picture holds : no "
+            "basis close to 32 x 30 beats the 32 x 30 reference value in any "
+            "meaningful way, the error being on a flat plateau around the "
+            "reference for every basis of the 780-1200-coefficient window. "
+            "The floor is a property of the round-trip on real spectra "
+            "(out-of-span fine structure + finite grid resolution), not of a "
+            "single product."
         )
     else:
-        answer += (
-            f"{near_prefix}"
-            f"<strong>{_fmt_pct(best_near['rel_l2'])}</strong> at "
-            f"<strong>{best_near['nk']} x {best_near['nphi']}</strong> "
-            f"({best_near['n_coeffs']} coefficients) : no basis in that window "
-            f"beats the {ref_txt} reference value, which remains the practical "
-            f"best reachable on this product."
-        )
+        closing = ""
+    closing_p = f"<p>{closing}</p>" if closing else ""
+    sections = "".join(_product_section(prod) for prod in products)
+    products_list = ", ".join(f"<code>{p['name']}</code>" for p in products)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -495,74 +659,41 @@ def _build_html(
 
   <div class="card findings">
     <h2 style="margin-top:0">Key finding</h2>
-    <p>{answer}</p>
-    <p>The reference 32 x 30 basis (960 coefficients) reaches a relative L2
-    error of <strong>{ref_txt}</strong>. The residual is dominated by fine,
-    noise-like structure that lies <em>outside</em> the span of the kernel,
-    plus the finite sampling of the {grid_shape[0]} x {grid_shape[1]} product
-    grid ({n_pixels} pixels). The error bottoms out on a plateau around
-    ~{ref_txt} for every basis in the 780-1200-coefficient window (it even
-    rises again beyond ~1000 coefficients, as the angular modes reach the
-    azimuth Nyquist limit of the 65 azimuth samples), so the practical best
-    reachable on this product is <strong>~15 %</strong>.</p>
+    <ul style="margin:6px 0 10px">
+      {"".join(summaries)}
+    </ul>
+    <p>The reference 32 x 30 basis (960 coefficients) is marked in each table
+    below; its relative L2 error on each product is the floor benchmark. The
+    residual is dominated by fine, noise-like structure that lies
+    <em>outside</em> the span of the kernel, plus the finite sampling of each
+    product grid.</p>
+    {closing_p}
   </div>
 
-  <h2>Convergence curves</h2>
-  <div class="card curves">
-    <img alt="convergence curves"
-         src="data:image/png;base64,{curves_b64}">
-  </div>
-
-  <h2>Metrics per basis</h2>
-  <div class="card" style="padding:0; overflow:auto;">
-    <table>
-      <thead><tr>
-        <th>basis ($N_k$ x $N_\\varphi$)</th><th># coeffs</th>
-        <th>rel. L2 error</th><th>captured L2 energy</th>
-        <th>worst pixel / peak</th><th>pixels within 50 % peak</th>
-        <th>Parseval residual</th><th></th>
-      </tr></thead>
-      <tbody>
-        {"".join(rows)}
-      </tbody>
-    </table>
-  </div>
-
-  <h2>Recomposition and difference with the original</h2>
-  <p class="sub">For each basis : the recomposed spectrum (left, white&rarr;red,
-  shared scale) and the pointwise difference recomposed $-$ original (right,
-  diverging scale, auto-limited to the max residual). The shrinking difference
-  panels and the residual fine structure are the visual signature of the
-  orthogonal projection converging to the in-span part of the spectrum.</p>
-  <div class="gallery">
-    {"".join(gallery)}
-  </div>
+  {sections}
 
   <h2>Interpretation</h2>
   <div class="card">
     <p><strong>Low relative L2 is good</strong> and the error decreases
     monotonically as the basis grows : the recomposition is the orthogonal
     projection of the spectrum onto the span of the kernel. The captured L2
-    energy equals $1 - \\mathrm{{relL2}}^2$ up to quadrature (the Parseval
+    energy equals 1 &minus; relL2<sup>2</sup> up to quadrature (the Parseval
     residual column stays small), which is the signature of a consistent
     back-and-forth.</p>
     <p><strong>The floor is not an implementation defect.</strong> Two
-    independent, non-bug limits set the ~15 % best reachable on this real
-    product : (i) the fine, noise-like structure (bragg ripples, backscatter
-    speckle) of the cross-spectrum that lives in the grid dimensions
-    orthogonal to the kernel span, and (ii) the {grid_shape[0]} x
-    {grid_shape[1]} product grid, whose 65 azimuth samples cap the resolvable
-    angular modes near $N_\\varphi = 30$ (Nyquist). On a smooth synthetic
+    independent, non-bug limits set the best reachable on these real products
+    : (i) the fine, noise-like structure (bragg ripples, backscatter speckle)
+    of the cross-spectrum that lives outside the kernel span, and (ii) the
+    finite product grid, whose azimuth sampling caps the resolvable angular
+    modes near N<sub>&phi;</sub> = 30 (Nyquist). On a smooth synthetic
     spectrum the same library path converges to ~3.7 % at 32 x 30, confirming
     the machinery is correct and the real-data floor is spectral + grid
     resolution.</p>
   </div>
 
-  <p class="foot">Source product : {xsp_name} (S1A WV1, one-sided
-  cross-spectrum, lag 2). Wavenumber window
-  $k \\in [2\\pi/600,\\, 2\\pi/25]$ rad/m. Display window
-  $k_x \\in [0, {kmax_display:.4f}]$, $k_y \\in
-  [-{K_Y_BAND}, {K_Y_BAND}]$ rad/m.</p>
+  <p class="foot">Source products : {products_list}
+  (one-sided cross-spectrum, lag 2, first time slice). Wavenumber window
+  k &isin; [2&pi;/{wlmax:.0f}, 2&pi;/{wlmin:.0f}] rad/m.</p>
 </div>
 </body>
 </html>
@@ -587,8 +718,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--xsp-nc",
         type=Path,
-        default=DEFAULT_XSP_NC,
-        help="SARWAVE L1B XSP NetCDF fixture (default: the S1A WV1 asset in assets/)",
+        nargs="+",
+        default=[DEFAULT_XSP_NC],
+        help=(
+            "one or more cross-spectrum NetCDF products (SARWAVE L1B XSP or "
+            "Envisat/xsar_slc L1C XSP), one report section per product "
+            "(default: the S1A WV1 asset in assets/)"
+        ),
     )
     parser.add_argument(
         "--wlmax",
@@ -628,20 +764,29 @@ def _parse_bases(text: str) -> list[tuple[int, int]]:
     return list(zip(vals[0::2], vals[1::2], strict=True))
 
 
-def run_report(args: argparse.Namespace) -> Path:
-    """Run the sweep and write the HTML report; return the output path."""
-    cfg = get_default_config()["cwave"]
-    wlmax = args.wlmax if args.wlmax is not None else float(cfg["cwave_wlmax"])
-    wlmin = args.wlmin if args.wlmin is not None else float(cfg["cwave_wlmin"])
-    kmin = 2.0 * np.pi / wlmax
-    kmax = 2.0 * np.pi / wlmin
-    kmax_display = kmax
-    bases = _parse_bases(args.bases) if args.bases else list(DEFAULT_BASES)
-    _apply_style()
+def _sweep_product(
+    xsp_nc: Path,
+    kmin: float,
+    kmax: float,
+    bases: list[tuple[int, int]],
+    no_panels: bool,
+) -> dict[str, Any]:
+    """Run the basis sweep on one cross-spectrum product.
 
-    logger.info("loading cross-spectrum: %s", args.xsp_nc)
-    with xr.open_dataset(args.xsp_nc) as ds:
-        xs = _l1b_cross_spectrum(ds, lag=2, time_idx=0, pol_idx=0)
+    Args:
+        xsp_nc: path to the product NetCDF file.
+        kmin: minimum wavenumber (rad/m).
+        kmax: maximum wavenumber (rad/m).
+        bases: (Nk, Nphi) sweep.
+        no_panels: skip the per-basis figures.
+
+    Returns:
+        The product dict consumed by :func:`_build_html` (name, results,
+        panels, curves png, grid shape / pixels, best basis, ...).
+    """
+    logger.info("loading cross-spectrum: %s", xsp_nc)
+    with xr.open_dataset(xsp_nc) as ds:
+        xs = _l1b_cross_spectrum_compat(ds, lag=2)
 
     f = _normalized_density(xs, kmin, kmax)
     # the kernel must be evaluated on the same (masked / dropna'd) grid as the
@@ -653,15 +798,17 @@ def run_report(args: argparse.Namespace) -> Path:
     k_az_1d = np.asarray(k_az, dtype=float)
     grid_shape = (int(f.sizes["freq_line"]), int(f.sizes["freq_sample"]))
     n_pixels = int(grid_shape[0] * grid_shape[1])
+    # the display window cannot exceed the range wavenumber grid of the product
+    kmax_display = min(kmax, float(np.nanmax(k_rg_1d)))
 
     results: list[dict[str, Any]] = []
     panels: list[tuple[dict[str, Any], bytes]] = []
     for nk, nphi in bases:
         res = _sweep_basis(
-            f, k_rg, k_az, kmin, kmax, nk, nphi, with_fields=(not args.no_panels)
+            f, k_rg, k_az, kmin, kmax, nk, nphi, with_fields=(not no_panels)
         )
         logger.info(
-            "basis %2dx%-2d (%4d coeffs): rel L2 = %7.3f  capture = %7.3f",
+            "  basis %2dx%-2d (%4d coeffs): rel L2 = %7.3f  capture = %7.3f",
             nk,
             nphi,
             res["n_coeffs"],
@@ -669,7 +816,7 @@ def run_report(args: argparse.Namespace) -> Path:
             res["capture"],
         )
         results.append(res)
-        if not args.no_panels:
+        if not no_panels:
             png = _fig_basis_panel(
                 f_2d,
                 res["fhat_2d"],
@@ -683,16 +830,47 @@ def run_report(args: argparse.Namespace) -> Path:
             res.pop("fhat_2d")
             res.pop("diff_2d")
 
-    curves_png = _fig_curves(results)
-    html = _build_html(
-        results,
-        curves_png,
-        panels,
-        kmax_display,
-        grid_shape,
-        n_pixels,
-        args.xsp_nc.name,
+    best = min(results, key=lambda r: r["rel_l2"])
+    near = [r for r in results if NEAR_NMIN <= r["n_coeffs"] <= NEAR_NMAX]
+    best_near = min(near, key=lambda r: r["rel_l2"]) if near else best
+    ref_row = next(
+        (r for r in results if (r["nk"], r["nphi"]) == REFERENCE_BASIS), None
     )
+    return {
+        "name": xsp_nc.name,
+        "results": results,
+        "panels": panels,
+        "curves_png": _fig_curves(results),
+        "kmax_display": kmax_display,
+        "grid_shape": grid_shape,
+        "n_pixels": n_pixels,
+        "best": best,
+        "best_near": best_near,
+        "near": near,
+        "ref_val": ref_row["rel_l2"] if ref_row is not None else REFERENCE_RELL2,
+    }
+
+
+def run_report(args: argparse.Namespace) -> Path:
+    """Run the sweep on every product and write the HTML report.
+
+    Returns:
+        The path of the written ``index.html``.
+    """
+    cfg = get_default_config()["cwave"]
+    wlmax = args.wlmax if args.wlmax is not None else float(cfg["cwave_wlmax"])
+    wlmin = args.wlmin if args.wlmin is not None else float(cfg["cwave_wlmin"])
+    kmin = 2.0 * np.pi / wlmax
+    kmax = 2.0 * np.pi / wlmin
+    bases = _parse_bases(args.bases) if args.bases else list(DEFAULT_BASES)
+    _apply_style()
+
+    products = [
+        _sweep_product(xsp_nc, kmin, kmax, bases, args.no_panels)
+        for xsp_nc in args.xsp_nc
+    ]
+
+    html = _build_html(products, wlmax, wlmin)
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -700,14 +878,16 @@ def run_report(args: argparse.Namespace) -> Path:
     out_html.write_text(html, encoding="utf-8")
     size_mb = out_html.stat().st_size / 1e6
     logger.info("wrote %s (%.2f MB)", out_html, size_mb)
-    best = min(results, key=lambda r: r["rel_l2"])
-    logger.info(
-        "best rel L2 = %.3f at %dx%d (%d coeffs)",
-        best["rel_l2"],
-        best["nk"],
-        best["nphi"],
-        best["n_coeffs"],
-    )
+    for prod in products:
+        best = prod["best"]
+        logger.info(
+            "%s: best rel L2 = %.3f at %dx%d (%d coeffs)",
+            prod["name"],
+            best["rel_l2"],
+            best["nk"],
+            best["nphi"],
+            best["n_coeffs"],
+        )
     return out_html
 
 
