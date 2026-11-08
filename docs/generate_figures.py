@@ -17,6 +17,12 @@ This produces, in ``docs/figures/`` :
   integrand ``kernel x |X_S|_norm x dk`` (the intermediate step summed to
   produce the CWAVE parameter). All panels share the CWAVE display domain
   ``k_rg in [0, kmax]``, ``k_az in [-kmax, kmax]`` (black = zero spectrum).
+* ``certification_roundtrip.png`` -- the round-trip (back-and-forth)
+  certification : the real WV L1B XSP cross-spectrum is decomposed into CWAVE
+  parameters and recomposed from the parameters x kernels for four increasing
+  basis sizes (Nk x Nphi = 4x5, 8x8, 16x16, 32x30); each row pairs the
+  original normalized ``|X_S|`` (left) with the recomposition (right) and
+  annotates the relative L2 error, showing the convergence of the round trip.
 * the SAR ``sigma0`` roughness image (``...-roughness.png``) is provided
   separately (not generated here) and is documented on the certification page.
 * ``cwave_map_k1_phi1.png``          -- the georeferenced CWAVE map (k_gp=1,
@@ -44,7 +50,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from cwaves.client import _l1b_cross_spectrum, polar_to_cartesian  # noqa: E402
-from cwaves.compute_cwaves import compute_kernel  # noqa: E402
+from cwaves.compute_cwaves import (  # noqa: E402
+    compute_cwave_parameters,
+    compute_kernel,
+)
 from cwaves.config import get_default_config  # noqa: E402
 from cwaves.ocn_sinh import compute_ocn_sinh_cartesian  # noqa: E402
 from cwaves.scripts.plot_kernels import (  # noqa: E402
@@ -472,11 +481,132 @@ def _gen_certification_all() -> None:
         plt.close(fig)
 
 
+def _roundtrip_density(xs: xr.DataArray, kmin_: float, kmax: float) -> xr.DataArray:
+    """Return the normalized ``|xs|`` density projected by ``compute_cwave_parameters``.
+
+    Exactly mirrors the input contract of the library (``repository_specifications.md``
+    section 6) : mask to the annulus ``kmin < kk < kmax``, drop fully masked
+    rows/columns, take the real modulus, and normalize to unit mass.
+
+    Args:
+        xs: complex one-sided cross-spectrum (``k_rg >= 0``).
+        kmin_: minimum wavenumber (rad/m).
+        kmax: maximum wavenumber (rad/m).
+
+    Returns:
+        xr.DataArray: the normalized density, dims ``(freq_sample, freq_line)``.
+    """
+    kk = (xs.k_rg**2 + xs.k_az**2) ** 0.5
+    xxs = xs.where((kk > kmin_) & (kk < kmax))
+    xxs = xxs.dropna(dim="freq_line", how="all").dropna(dim="freq_sample", how="all")
+    xxsm = (xxs.real**2 + xxs.imag**2) ** 0.5
+    dkrg = float(xxs.k_rg.diff(dim="freq_sample").mean(dim="freq_sample"))
+    dkaz = float(xxs.k_az.diff(dim="freq_line").mean(dim="freq_line"))
+    return xxsm / (
+        xxsm.sum(dim=["freq_line", "freq_sample"], skipna=True) * dkrg * dkaz
+    )
+
+
+def _gen_roundtrip() -> None:
+    """Render the round-trip (back-and-forth) certification figure.
+
+    Decomposes the real WV L1B XSP cross-spectrum (the same S1A WV1 acquisition
+    as the other certification figures) into CWAVE parameters with
+    :func:`cwaves.compute_cwave_parameters`, recomposes the spectrum from the
+    parameters x kernels, and pairs the original normalized ``|X_S|`` density
+    (left column) with the recomposition (right column) for four increasing
+    basis sizes. All panels share the CWAVE display domain and one white -> red
+    color scale (white = zero, ``vmax`` = original peak), and each right panel
+    is annotated with its relative L2 error, so the convergence of the
+    round trip toward the original spectrum is visible row by row.
+
+    This is the figure behind the round-trip unit tests
+    (``tests/test_cwaves.py::test_cwave_roundtrip_*``) : it certifies that the
+    library can go back and forth between a spectrum and its CWAVE parameters.
+    """
+    cfg = get_default_config()["cwave"]
+    wlmax, wlmin = cfg["cwave_wlmax"], cfg["cwave_wlmin"]
+    kmin_ = kmin(wlmax, wlmin)
+    kmax_display = 2.0 * np.pi / wlmin
+
+    with xr.open_dataset(XSP_NC) as ds:
+        xs = _l1b_cross_spectrum(ds, lag=2, time_idx=0, pol_idx=0)
+
+    f = _roundtrip_density(xs, kmin_, kmax_display)
+    k_rg_1d = np.asarray(f.k_rg, dtype=float)
+    k_az_1d = np.asarray(f.k_az, dtype=float)
+    f_2d = f.transpose("freq_line", "freq_sample").values
+    fv = np.asarray(f, dtype=float)
+    norm2 = float(np.nansum(fv**2))
+
+    # increasing basis sizes : default 4 x 5 up to 960 coefficients (vs the
+    # 65 x 128 = 8320 grid pixels) so the decomposition stays well sampled
+    settings = [(4, 5), (8, 8), (16, 16), (32, 30)]
+    _apply_style()
+    n_rows = len(settings)
+    fig, axes = plt.subplots(
+        n_rows, 2, figsize=(11.0, 3.0 * n_rows), constrained_layout=True
+    )
+    norm = mcolors.Normalize(vmin=0.0, vmax=float(np.nanmax(f_2d)))
+    for i, (nk, nphi) in enumerate(settings):
+        cp = compute_cwave_parameters(
+            xs,
+            cwave_wlmax=wlmax,
+            cwave_wlmin=wlmin,
+            cwave_Nk=nk,
+            cwave_Nphi=nphi,
+        )
+        kernel = compute_kernel(
+            xs.k_rg, xs.k_az, kmin_, kmax_display, cwave_Nk=nk, cwave_Nphi=nphi
+        )
+        fhat = (kernel["cwave_kernel"] * cp).sum(dim=["k_gp", "phi_hf"])
+        fhat_2d = fhat.transpose("freq_line", "freq_sample").values
+        # relative L2 error of the recomposition vs the original density
+        ev = np.asarray(f - fhat, dtype=float)
+        rel_l2 = float(np.sqrt(np.nansum(ev**2) / norm2))
+
+        axes[i, 0].pcolormesh(
+            k_rg_1d, k_az_1d, f_2d, cmap=CWMAP, shading="auto", norm=norm
+        )
+        axes[i, 0].set_title(
+            r"original  $|X_S|_{\rm norm}$" if i == 0 else "", fontsize=11
+        )
+        axes[i, 1].pcolormesh(
+            k_rg_1d, k_az_1d, fhat_2d, cmap=CWMAP, shading="auto", norm=norm
+        )
+        axes[i, 1].set_title(
+            rf"recomposed  ($N_k$={nk}, $N_\varphi$={nphi}, "
+            rf"{nk * nphi} coeffs)  --  rel. L2 = {rel_l2:.1%}",
+            fontsize=11,
+        )
+        for ax in axes[i]:
+            ax.set_xlim(0.0, kmax_display)
+            ax.set_ylim(-K_Y_BAND, K_Y_BAND)
+            if i == n_rows - 1:
+                ax.set_xlabel(r"$k_x$ (range)  [rad m$^{-1}$]")
+            if ax is axes[i, 0]:
+                ax.set_ylabel(r"$k_y$ (azimuth)  [rad m$^{-1}$]")
+
+    fig.colorbar(
+        plt.cm.ScalarMappable(norm=norm, cmap=CWMAP),
+        ax=axes[:, 1].tolist(),
+        label=r"$|X_S|_{\rm norm}$  (a.u.)",
+    )
+    fig.suptitle(
+        "Round-trip  :  CWAVE decomposition  $\\to$  recomposition "
+        "of a real WV cross-spectrum (SARWAVE L1B XSP, 65 x 128 grid)",
+        fontsize=14,
+    )
+    fig.savefig(FIG_DIR / "certification_roundtrip.png", bbox_inches="tight")
+    plt.close(fig)
+
+
 def main() -> None:
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     _gen_kernels()
     _gen_certification()
     _gen_certification_all()
+    _gen_roundtrip()
     for f in sorted(FIG_DIR.glob("*.png")):
         print(f"wrote {f} ({f.stat().st_size} bytes)")
 

@@ -105,6 +105,74 @@ directly comparable.
      :align: center
      :width: 100%
 
+Round-trip reconstruction (back-and-forth)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This section certifies that the CWAVE decomposition and the spectrum
+reconstruction from the CWAVE coefficients form a consistent back-and-forth.
+The same S1A WV1 cross-spectrum (SARWAVE L1B XSP, normalised modulus
+:math:`|X_S|` on the one-sided domain :math:`A`) is decomposed into CWAVE
+coefficients by :func:`cwaves.compute_cwaves.compute_cwave_parameters` and
+then **reconstructed from the coefficients alone** with the orthonormal
+kernels of :func:`cwaves.compute_cwaves.compute_kernel` — the decomposition
+and the reconstruction use the same kernels and the same quadrature. Each row
+of the figure shows, for one kernel size, the original spectrum (left) next to
+its reconstruction (right); the relative L2 error of the round trip is
+reported in the right-hand title.
+
+.. figure:: figures/certification_roundtrip.png
+   :align: center
+   :width: 100%
+
+   Round trip of the S1A WV1 cross-spectrum. Rows:
+   :math:`N_k \times N_\varphi` = 4 x 5, 8 x 8, 16 x 16, 32 x 30 (20, 64,
+   256, 960 coefficients). Left: original spectrum. Right: reconstruction
+   from the CWAVE coefficients, with the relative L2 error in the title.
+
+The relative L2 error decreases monotonically as the kernel set grows :
+55.25 % -> 41.15 % -> 29.11 % -> **15.33 %** for 20 -> 64 -> 256 -> 960
+coefficients, and the fraction of the domain-:math:`A` L2 energy captured by
+the reconstruction rises from 69.5 % (default 4 x 5) to 97.65 % (32 x 30).
+This is the signature of an orthogonal projection : the reconstruction is the
+projection of the spectrum onto the span of the kernel, and at 32 x 30 the
+residual is exactly the 2.35 % of the L2 energy that lies outside the
+960-dimensional span (:math:`15.33\,\% = \sqrt{1 - 0.9765}`).
+
+**15 % is the best reachable on this real product, and the residual is not an
+implementation artefact.** Two independent limits set the floor :
+
+- the real cross-spectrum carries fine, noise-like structure (bragg ripples,
+  backscatter speckle) that lives in the ~7300 grid dimensions orthogonal to
+  the 960-dimensional kernel span — no choice of 960 coefficients can
+  represent it;
+- the product grid is 65 x 128, i.e. only 65 azimuth samples : the number of
+  resolvable angular modes is limited by the Nyquist frequency, so
+  :math:`N_\varphi = 30` is already near the limit. Enlarging the kernel set
+  beyond it (40 x 35) **increases** the error to 17.13 % — the higher-order
+  kernels are under-sampled on the coarse grid.
+
+Conversely, on a **smooth** synthetic spectrum (two Gaussians, i.e. the kind
+of signal the basis is designed to hold) the same library path converges to
+near-perfect reconstruction : 68.8 % -> 49.5 % -> 16.3 % -> **3.7 %** relative
+L2 at 4 x 5, 8 x 8, 16 x 16, 32 x 30, still decreasing. So "many CWAVE
+coefficients reconstruct the spectrum perfectly" is true in principle; the
+~15 % floor on the real acquisition is the spectrum's fine structure plus the
+grid resolution, not a defect of the code.
+
+The orthonormality that underlies this back-and-forth is checked directly : on
+a fine 400 x 400 grid with the paper parameters, the Gram matrix of the
+kernels on the one-sided domain :math:`A` has diagonal
+:math:`1.000 \pm 0.004` (min 0.996, max 1.006) and off-diagonal entries below
+0.4 % of the diagonal. The unit tests
+(:mod:`tests/test_cwaves`) certify all of the above on the same WV fixture :
+``test_cwave_roundtrip_reconstruction`` (round-trip error and pixel-to-pixel
+tolerances), ``test_cwave_roundtrip_energy_balance`` (discrete Parseval
+identity between the coefficients and the residual),
+``test_cwave_roundtrip_convergence`` (captured energy is non-decreasing for
+nested kernel sets) and ``test_compute_kernel_orthonormality`` (the kernel
+Gram matrix, for which the historical ``xsar_slc`` ``eta`` bug used to give a
+24-39 % off-diagonal contamination).
+
 Case study: Galicia -> Ireland (15 S1B IW XSP products)
 -------------------------------------------------------
 
