@@ -14,10 +14,13 @@ import numpy as np
 import pytest
 import xarray as xr
 from cwaves.scripts.cwave_certification_report import (
+    GRAM_BASIS,
+    IDEMPOTENCE_TOL,
     _build_html,
     _fig_basis_panel,
     _fig_curves,
     _fmt_pct,
+    _gram_diagnostic,
     _kernel_domain_mask,
     _l1b_cross_spectrum_compat,
     _load_cross_spectrum,
@@ -25,6 +28,7 @@ from cwaves.scripts.cwave_certification_report import (
     _parse_bases,
     _png_bytes,
     _product_kind,
+    _refinement_demo,
     _sweep_basis,
     _sweep_product,
     entrypoint,
@@ -222,6 +226,15 @@ def _res(nk: int, nphi: int, rel_l2: float) -> dict[str, int | float]:
     }
 
 
+def _res_idemp(
+    nk: int, nphi: int, rel_l2: float, idemp_abs: float, idemp_rel: float
+) -> dict[str, int | float]:
+    """Build a sweep-result row carrying the Part 2 idempotence metrics."""
+    return dict(
+        _res(nk, nphi, rel_l2), idemp_max_abs=idemp_abs, idemp_max_rel=idemp_rel
+    )
+
+
 # ---------------------------------------------------------------------------
 # _parse_bases / _fmt_pct
 # ---------------------------------------------------------------------------
@@ -301,6 +314,60 @@ def test_sweep_basis_no_fields():
     res = _sweep_basis(f, k_rg, k_az, KMIN, KMAX, 2, 3, with_fields=False)
     assert "fhat_2d" not in res
     assert "diff_2d" not in res
+
+
+def test_sweep_basis_idempotence_metrics():
+    # Part 2 : the coefficient round-trip C -> fhat -> C' is measured on
+    # every basis of the sweep
+    xs = _synthetic_xs()
+    f = _normalized_density(xs, KMIN, KMAX)
+    k_rg = xr.DataArray(np.asarray(f.k_rg, dtype=float), dims="freq_sample")
+    k_az = xr.DataArray(np.asarray(f.k_az, dtype=float), dims="freq_line")
+    res = _sweep_basis(f, k_rg, k_az, KMIN, KMAX, 4, 5, with_fields=False)
+    assert np.isfinite(res["idemp_max_abs"])
+    assert np.isfinite(res["idemp_max_rel"])
+    assert res["idemp_max_abs"] >= 0.0
+    assert res["idemp_max_rel"] >= 0.0
+    # the coarse 25 x 25 test grid is far from the continuum limit : the
+    # first-order quadrature error is well above the 1e-7 gate
+    assert res["idemp_max_abs"] > IDEMPOTENCE_TOL
+
+
+def test_refinement_demo_converges():
+    # Part 2 : on a full-domain grid the idempotence error halves with every
+    # grid doubling (first-order quadrature, not a systematic bug) and the
+    # discrete Gram matrix of the 4 x 5 basis converges to the identity
+    rows = _refinement_demo(
+        KMIN, KMAX, plans=[(1, 128, 64, [(4, 5)]), (2, 256, 128, [(4, 5)])]
+    )
+    assert len(rows) == 2
+    err1, err2 = (r["idemp_max_abs"] for r in rows)
+    assert err2 < 0.75 * err1
+    # the Gram deviations (on the GRAM_BASIS rows) shrink with refinement
+    assert rows[0]["gram_diag"] < 0.25
+    assert rows[0]["gram_off"] < 0.25
+    assert rows[1]["gram_diag"] < rows[0]["gram_diag"]
+    assert rows[1]["gram_off"] < rows[0]["gram_off"]
+    assert rows[1]["gram_diag"] < 0.1
+    assert rows[1]["gram_off"] < 0.1
+    # the non-GRAM_BASIS rows carry no Gram keys
+    rows32 = _refinement_demo(KMIN, KMAX, plans=[(1, 128, 64, [(32, 30)])])
+    assert "gram_diag" not in rows32[0]
+    assert "gram_off" not in rows32[0]
+
+
+def test_gram_diagnostic_identity_like():
+    # Part 2 : the 4 x 5 basis is nearly orthonormal on a fine full-domain
+    # grid (M close to the identity) and the diagnostic is NaN-free (the
+    # out-of-domain kernel values are zero-filled)
+    n_fr, n_fs = 256, 128
+    k_rg = xr.DataArray(np.linspace(0.0, KMAX, n_fs), dims="freq_sample")
+    k_az = xr.DataArray(np.linspace(-KMAX, KMAX, n_fr), dims="freq_line")
+    diag, off = _gram_diagnostic(k_rg, k_az, KMIN, KMAX, *GRAM_BASIS)
+    assert np.isfinite(diag)
+    assert np.isfinite(off)
+    assert diag < 0.1
+    assert off < 0.1
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +577,120 @@ def test_build_html_no_domain_breakdown():
     assert "in-kernel-domain rel. L2" not in html
 
 
+def test_build_html_part2_fail():
+    # Part 2 : a product sweep that fails the idempotence gate renders the
+    # Part 2 section, the FAIL verdict, the per-product table and the tags
+    results = [
+        _res_idemp(32, 30, 0.1533, 0.46, 0.05),
+        _res_idemp(40, 35, 0.1500, 0.70, 0.075),
+    ]
+    prod = _prod(
+        "s1a.nc",
+        results,
+        idemp_pass=False,
+        idemp_worst=results[1],
+        gram_grid=(512, 256),
+        gram_diag=3.3e-2,
+        gram_off=6.0e-2,
+    )
+    html = _build_html([prod], 600.0, 25.0)
+    assert 'id="part-2"' in html
+    assert "Part 2 &mdash; Coefficient idempotence" in html
+    # the gate verdict is a FAIL with the worst (product, basis)
+    assert "FAIL on 1 of 1 products" in html
+    assert "7.000e-01" in html
+    # the per-product table carries the per-basis PASS/FAIL tags
+    assert "gate 1e-07" in html
+    assert html.count("<span class='tag fail'>FAIL</span>") == 2
+    assert "<span class='tag pass'>PASS</span>" not in html
+    # the Gram diagnostic table is rendered
+    assert "Discrete Gram matrix M of the 4 x 5 basis" in html
+    assert "3.300e-02" in html
+    assert "6.000e-02" in html
+    # the nav carries the Part 1 and Part 2 entries
+    assert "href='#part-1'" in html
+    assert 'id="part-1"' in html
+    assert "href='#part-2'" in html
+
+
+def test_build_html_part2_pass():
+    # Part 2 : when every basis clears the gate the verdict is a PASS and the
+    # per-basis tags are green
+    results = [
+        _res_idemp(4, 5, 0.30, 1e-9, 1e-10),
+        _res_idemp(32, 30, 0.1533, 5e-8, 1e-9),
+    ]
+    prod = _prod(
+        "s1a.nc",
+        results,
+        idemp_pass=True,
+        idemp_worst=results[1],
+        gram_grid=(512, 256),
+        gram_diag=1e-3,
+        gram_off=1e-3,
+    )
+    html = _build_html([prod], 600.0, 25.0)
+    assert "PASS on 1 of 1 products" in html
+    assert html.count("<span class='tag pass'>PASS</span>") == 2
+    assert "<span class='tag fail'>FAIL</span>" not in html
+
+
+def test_build_html_part2_refinement_table():
+    # Part 2 : the refinement demo rows are rendered (with the Gram columns
+    # on the GRAM_BASIS rows and dashes on the other rows)
+    results = [_res_idemp(4, 5, 0.30, 3.5e-2, 1.0e-2)]
+    prod = _prod(
+        "s1a.nc",
+        results,
+        idemp_pass=False,
+        idemp_worst=results[0],
+        gram_grid=(512, 256),
+        gram_diag=3.3e-2,
+        gram_off=6.0e-2,
+    )
+    refinement = [
+        {
+            "scale": 1,
+            "grid": (256, 128),
+            "nk": 4,
+            "nphi": 5,
+            "idemp_max_abs": 3.521e-2,
+            "idemp_max_rel": 1.022e-2,
+            "gram_diag": 4.887e-2,
+            "gram_off": 5.626e-2,
+        },
+        {
+            "scale": 2,
+            "grid": (512, 256),
+            "nk": 4,
+            "nphi": 5,
+            "idemp_max_abs": 1.746e-2,
+            "idemp_max_rel": 5.069e-3,
+            "gram_diag": 2.297e-2,
+            "gram_off": 2.076e-2,
+        },
+    ]
+    html = _build_html([prod], 600.0, 25.0, refinement=refinement)
+    assert "Grid-refinement evidence" in html
+    assert "3.521e-02" in html
+    assert "1.746e-02" in html
+    assert "4.887e-02" in html
+    assert "2.297e-02" in html
+    # the 4x5 basis row count (the GRAM_BASIS rows carry the Gram cells)
+    assert html.count("512 x 256 (2x)") >= 1
+
+
+def test_build_html_no_part2_without_idempotence_metrics():
+    # backward compatibility : a product sweep without the idempotence keys
+    # (e.g. built before Part 2) renders no Part 2 section at all
+    results = [_res(32, 30, 0.1533)]
+    prod = _prod("s1a.nc", results)
+    html = _build_html([prod], 600.0, 25.0)
+    assert 'id="part-2"' not in html
+    assert "Coefficient idempotence" not in html
+    assert "href='#part-2'" not in html
+
+
 def test_build_html_multi_product():
     p1 = _prod("s1a.nc", [_res(32, 30, 0.1533), _res(32, 32, 0.1529)])
     p2 = _prod("envisat.nc", [_res(32, 30, 0.1533), _res(30, 30, 0.1528)])
@@ -593,6 +774,14 @@ def test_entrypoint_end_to_end(tmp_path):
     # the gallery rows carry the fourth-column metrics
     assert html.count("<div class='panel-metrics'>") == 2
     assert "highest pixel-to-pixel difference" in html
+    # Part 2 is rendered : the 1e-7 gate, the verdict card and the
+    # per-product idempotence table (the coarse synthetic grid fails it)
+    assert 'id="part-2"' in html
+    assert "Coefficient idempotence" in html
+    assert "gate 1e-07" in html
+    assert "FAIL on 1 of 1 products" in html
+    assert "Grid-refinement evidence" in html
+    assert "Discrete Gram matrix M" in html
 
 
 def test_entrypoint_no_panels(tmp_path):
@@ -853,6 +1042,24 @@ def test_sweep_product_kernel_domain(tmp_path):
     for res in prod["results"]:
         assert "rel_l2_domain" in res
         assert 0.0 <= float(res["rel_l2_domain"]) < float(res["rel_l2"])
+    # Part 2 : every sweep result carries the idempotence metrics and the
+    # product dict carries the aggregation + the Gram diagnostic
+    for res in prod["results"]:
+        assert "idemp_max_abs" in res
+        assert "idemp_max_rel" in res
+        assert res["idemp_max_abs"] >= 0.0
+    assert isinstance(prod["idemp_pass"], bool)
+    assert prod["idemp_worst"] in prod["results"]
+    # the Gram grid is 2x the (masked / dropna'd) density grid of the sweep
+    with xr.open_dataset(nc) as ds:
+        xs = _load_cross_spectrum(ds, lag=2, kmax=KMAX)
+    f = _normalized_density(xs, KMIN, KMAX)
+    assert prod["gram_grid"] == (
+        2 * int(f.sizes["freq_line"]),
+        2 * int(f.sizes["freq_sample"]),
+    )
+    assert np.isfinite(prod["gram_diag"])
+    assert np.isfinite(prod["gram_off"])
 
 
 def test_entrypoint_ocn_product(tmp_path):
