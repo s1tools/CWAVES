@@ -2424,6 +2424,36 @@ def _build_html(
     non-uniformity in the kernel's native coordinates), not a property of
     the basis; the residual native rise is the radial midpoint-quadrature
     error, which shrinks as the node count grows.</p>
+    <p><strong>Why the curve is U-shaped &mdash; and how to push the minimum to
+    the right.</strong> The two terms of the previous paragraph play out
+    differently on the two grids. On the cartesian product grid the nodes are
+    non-uniform in the kernel's own coordinates, so the quadrature penalty
+    takes over early : the noisy SAR products bottom out at 16&ndash;32 x
+    24&ndash;32, and the smooth WW3 spectrum at 56 x 40 (3.62 %) before the
+    error rises steeply (8.29 % at 80 x 55). On the native grid the discrete
+    basis is (near-)exactly orthonormal up to high mode order, so the penalty
+    is much smaller and the minimum is deeper (3.11 % at 64 x 45) &mdash; but
+    it is still not found at much larger coefficient counts, because the
+    512 x 256 node count itself limits the resolvable radial modes : the
+    radial midpoint-quadrature error grows with the mode order (the
+    spectrum-independent Gram deviation goes from 1.75e-2 at 40 x 35 to
+    6.8e-2 at 80 x 55) and takes over after 64 x 45. The lever to go further
+    down is therefore a finer grid, not more coefficients on the same grid :
+    on a 4x-finer native grid (1024 x 512) the Gram deviation at 80 x 55 is
+    halved (3.2e-2) and the curve keeps decreasing to 2.30 % at 96 x 60
+    (5760 coefficients) without turning up in the tested range &mdash; the
+    minimum moves to larger N exactly as the smoothness of the spectrum
+    suggests, once the grid can keep up. A polar grid that is regular in k
+    (uniform radius, uniform angle) would not help : the kernel domain is
+    ellipse-like rather than a polar annulus, and the basis is orthonormal in
+    the (&alpha;<sub>k</sub>, &alpha;<sub>&phi;</sub>) coordinates with a
+    uniform measure ; a k-regular grid is non-uniform in
+    &alpha;<sub>k</sub> (up to ~14x coarser than the native grid near kmin,
+    where the high-order Gegenbauer polynomials oscillate most) and its
+    discrete basis is severely non-orthonormal &mdash; the in-domain
+    round-trip there is not a projection at all (relative L2 ~ 690 % at
+    40 x 35, i.e. the recomposition is ~7x the spectrum norm, versus 3.11 %
+    on the native grid).</p>
     <p><strong>The floor is not an implementation defect.</strong> Two
     independent, non-bug limits set the best reachable on these real products
     : (i) the fine, noise-like structure (bragg ripples, backscatter speckle)
