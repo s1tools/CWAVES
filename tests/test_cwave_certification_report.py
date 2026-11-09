@@ -1,9 +1,11 @@
 """Tests for :mod:`cwaves.scripts.cwave_certification_report`.
 
-A tiny synthetic SARWAVE L1B XSP product (one time slice, smooth spectrum) is
-built in ``tmp_path`` so the full ``entrypoint`` can be exercised without the
-real asset. The pure helpers (basis parsing, normalized density, per-basis
-sweep, figures, HTML assembly) are tested on a synthetic cross-spectrum.
+Tiny synthetic products are built in ``tmp_path`` so the full ``entrypoint``
+can be exercised without the real assets : a SARWAVE L1B XSP (one time slice,
+smooth spectrum), an Envisat/xsar_slc L1C (singleton tile dims) and an OCN WV
+osw product (cartesian ``oswCartSpec`` on a sinh grid, ``m/m`` units). The pure
+helpers (basis parsing, normalized density, per-basis sweep, figures, HTML
+assembly, schema dispatch) are tested on synthetic cross-spectra.
 """
 
 from typing import Any
@@ -17,9 +19,11 @@ from cwaves.scripts.cwave_certification_report import (
     _fig_curves,
     _fmt_pct,
     _l1b_cross_spectrum_compat,
+    _load_cross_spectrum,
     _normalized_density,
     _parse_bases,
     _png_bytes,
+    _product_kind,
     _sweep_basis,
     entrypoint,
 )
@@ -117,6 +121,54 @@ def _make_xsp_product_envisat(path: str) -> None:
             ),
         },
         coords={"pol": ["VV"], "tile_sample": [0], "tile_line": [0]},
+    )
+    ds.to_netcdf(path)
+
+
+def _make_ocn_product(path: str) -> None:
+    """Write a minimal OCN WV osw product (cartesian sinh grid, ``m/m`` units).
+
+    The ``oswCartSpecRe/Im`` are on a sinh (non-uniform) wavenumber grid in
+    normalized (``m/m``) units, decoded to a regular rad/m grid by
+    :func:`cwaves.ocn_sinh.compute_ocn_sinh_cartesian`. Single-tile layout
+    (no ``oswAzSize`` / ``oswRaSize`` dims) with the calibration inputs the
+    decoder needs (``oswKy``, ``oswAziSize``, ``owiIncidenceAngle`` and the
+    ``raSamplingFreq`` attribute).
+    """
+    from cwaves.ocn_sinh import DEFAULT_GROWTH_RATE
+
+    n_kx, n_ky, n_lag = 16, 9, 3
+    growth = DEFAULT_GROWTH_RATE
+    azi_size = 20433.0
+    dky_true = 1.3e-3  # rad/m per unit of the normalized (m/m) azimuth grid
+    kappa_az = np.arange(n_ky) - n_ky // 2
+    kky = np.sinh(growth * kappa_az) / growth
+    osw_ky = (dky_true * azi_size * kky).astype(np.float64)
+    osw_kx = (dky_true * azi_size * np.sinh(growth * np.arange(n_kx)) / growth).astype(
+        np.float64
+    )
+    kx_idx = np.arange(n_kx)
+    ky_idx = np.arange(n_ky) - n_ky // 2
+    ky, kx = np.meshgrid(ky_idx, kx_idx, indexing="ij")  # (n_ky, n_kx)
+    gauss = np.exp(-((kx * kx + ky * ky) / 30.0))
+    re = np.repeat(gauss[:, :, None], n_lag, axis=2)
+    im = np.repeat(0.05 * gauss[:, :, None], n_lag, axis=2)
+    ds = xr.Dataset(
+        {
+            "oswCartSpecRe": (
+                ("oswKyBinSize", "oswKxBinSize", "oswLag"),
+                re.astype(np.float32),
+            ),
+            "oswCartSpecIm": (
+                ("oswKyBinSize", "oswKxBinSize", "oswLag"),
+                im.astype(np.float32),
+            ),
+            "oswKx": ("oswKxBinSize", osw_kx.astype(np.float32)),
+            "oswKy": ("oswKyBinSize", osw_ky.astype(np.float32)),
+            "oswAziSize": np.float64(azi_size),
+            "owiIncidenceAngle": np.float64(30.0),
+        },
+        attrs={"raSamplingFreq": np.float64(1.0e8)},
     )
     ds.to_netcdf(path)
 
@@ -260,6 +312,7 @@ def _prod(
     ref = next((r for r in results if (r["nk"], r["nphi"]) == (32, 30)), None)
     defaults: dict[str, Any] = {
         "results": results,
+        "kind": "SARWAVE L1B XSP",
         "panels": [],
         "curves_png": b"png",
         "kmax_display": 0.25,
@@ -322,8 +375,10 @@ def test_build_html_multi_product():
     assert 'class="product"' in html
     assert "s1a.nc" in html
     assert "envisat.nc" in html
-    # the unified finding lists one verdict per product
-    assert html.count("<li>") == 2
+    # the unified finding lists one verdict per product (the side nav also
+    # carries <li> items, so count inside the summary list only)
+    summary = html.split('class="summary"')[1].split("</ul>")[0]
+    assert summary.count("<li>") == 2
     assert "flat plateau" in html
     # the unified closing is present because every product is flat
     assert "not of a single product" in html
@@ -352,6 +407,26 @@ def test_build_html_single_product_no_closing():
     html = _build_html([p1], 600.0, 25.0)
     # no multi-product closing for a single product
     assert "not of a single product" not in html
+
+
+def test_build_html_nav():
+    p1 = _prod("s1a.nc", [_res(32, 30, 0.1533), _res(32, 32, 0.1529)])
+    p2 = _prod("envisat.nc", [_res(32, 30, 0.1533), _res(30, 30, 0.1528)])
+    html = _build_html([p1, p2], 600.0, 25.0)
+    # the side navigation panel is present
+    assert "<nav class='sidenav'>" in html
+    assert "href='#top'" in html
+    assert "href='#interpretation'" in html
+    assert 'id="interpretation"' in html
+    # one nav entry and one anchor per product section
+    assert "href='#product-1'" in html
+    assert "href='#product-2'" in html
+    assert 'id="product-1"' in html
+    assert 'id="product-2"' in html
+    assert html.count('id="product-') == 2
+    # the nav entries carry the product names
+    assert ">1. s1a.nc</a>" in html
+    assert ">2. envisat.nc</a>" in html
 
 
 # ---------------------------------------------------------------------------
@@ -460,14 +535,17 @@ def test_compat_l1b_schema(tmp_path):
 def test_entrypoint_multi_product(tmp_path):
     nc1 = tmp_path / "s1a.nc"
     nc2 = tmp_path / "envisat.nc"
+    nc3 = tmp_path / "ocn.nc"
     _make_xsp_product(str(nc1))
     _make_xsp_product_envisat(str(nc2))
+    _make_ocn_product(str(nc3))
     out_dir = tmp_path / "out"
     rc = entrypoint(
         [
             "--xsp-nc",
             str(nc1),
             str(nc2),
+            str(nc3),
             "--output-dir",
             str(out_dir),
             "--bases",
@@ -476,9 +554,82 @@ def test_entrypoint_multi_product(tmp_path):
     )
     assert rc == 0
     html = (out_dir / "index.html").read_text()
-    # one section per product, both in the summary list and the footer
-    assert html.count('class="product"') == 2
+    # one section per product, all in the summary list and the footer
+    assert html.count('class="product"') == 3
     assert "s1a.nc" in html
     assert "envisat.nc" in html
+    assert "ocn.nc" in html
+    # the OCN section carries its schema label
+    assert "cartesian sinh grid, decoded to regular rad/m" in html
     # one panel + one curves figure per product
-    assert html.count("data:image/png;base64,") == 4
+    assert html.count("data:image/png;base64,") == 6
+    # the side nav carries one entry per product
+    assert "href='#product-3'" in html
+
+
+# ---------------------------------------------------------------------------
+# OCN WV osw schema (cartesian sinh grid, m/m units)
+# ---------------------------------------------------------------------------
+
+
+def test_product_kind(tmp_path):
+    nc_l1b = tmp_path / "s1a.nc"
+    nc_l1c = tmp_path / "envisat.nc"
+    nc_ocn = tmp_path / "ocn.nc"
+    _make_xsp_product(str(nc_l1b))
+    _make_xsp_product_envisat(str(nc_l1c))
+    _make_ocn_product(str(nc_ocn))
+    with xr.open_dataset(nc_l1b) as ds:
+        assert _product_kind(ds) == "SARWAVE L1B XSP"
+    with xr.open_dataset(nc_l1c) as ds:
+        assert _product_kind(ds) == "ASAR WVI XSP L1C (xsar_slc)"
+    with xr.open_dataset(nc_ocn) as ds:
+        assert (
+            _product_kind(ds)
+            == "OCN WV (cartesian sinh grid, decoded to regular rad/m)"
+        )
+
+
+def test_load_cross_spectrum_ocn(tmp_path):
+    nc = tmp_path / "ocn.nc"
+    _make_ocn_product(str(nc))
+    with xr.open_dataset(nc) as ds:
+        xs = _load_cross_spectrum(ds, lag=2)
+    # the sinh grid is decoded to a regular rad/m grid, canonical dims
+    assert xs.dims == ("freq_line", "freq_sample")
+    assert xs.shape == (256, 128)  # 256 azimuth x 128 one-sided range
+    assert np.iscomplexobj(xs.values)
+    assert bool(np.isfinite(np.abs(xs.values)).all())
+    # one-sided range wavenumbers, calibrated to rad/m
+    k_rg = np.asarray(xs["k_rg"], dtype=float)
+    k_az = np.asarray(xs["k_az"], dtype=float)
+    assert float(k_rg.min()) == pytest.approx(0.0, abs=1e-9)
+    assert float(k_rg.max()) == pytest.approx(0.2599, rel=1e-3)
+    assert float(k_az.min()) < 0.0 < float(k_az.max())
+    assert float(np.abs(k_az).max()) == pytest.approx(0.1664, rel=1e-3)
+
+
+def test_load_cross_spectrum_l1b(tmp_path):
+    # the SARWAVE L1B / Envisat path is unchanged by the OCN dispatch
+    nc = tmp_path / "s1a.nc"
+    _make_xsp_product(str(nc))
+    with xr.open_dataset(nc) as ds:
+        xs = _load_cross_spectrum(ds, lag=2)
+    assert xs.dims == ("freq_line", "freq_sample")
+    assert xs.shape == (25, 40)
+    assert np.iscomplexobj(xs.values)
+
+
+def test_entrypoint_ocn_product(tmp_path):
+    nc = tmp_path / "ocn.nc"
+    _make_ocn_product(str(nc))
+    out_dir = tmp_path / "out"
+    rc = entrypoint(
+        ["--xsp-nc", str(nc), "--output-dir", str(out_dir), "--bases", "2 3"]
+    )
+    assert rc == 0
+    html = (out_dir / "index.html").read_text()
+    assert "2 x 3" in html
+    assert "cartesian sinh grid, decoded to regular rad/m" in html
+    # one per-basis panel + one curves figure
+    assert html.count("data:image/png;base64,") == 2

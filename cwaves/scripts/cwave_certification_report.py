@@ -11,19 +11,26 @@ then renders:
   and the discrete Parseval residual;
 * **convergence curves** of each metric versus the number of CWAVE coefficients
   (``Nk x Nphi``), with the 32 x 30 = 960-coefficient point marked;
-* a **gallery** of, per basis, the recomposed spectrum next to the pointwise
-  difference with the original, so the convergence (and the residual fine
-  structure) is visible by eye.
+* a **gallery** of, per basis, the original spectrum, the recomposed spectrum
+  and the pointwise difference, so the convergence (and the residual fine
+  structure) is visible by eye;
+* a **side navigation panel** to jump between the product sections.
 
 The whole report is written as a **single self-contained ``index.html``** (all
 figures embedded as base64 PNGs) so it can be published or shared as one file.
 
-Any cross-spectrum NetCDF product with the ``xspectra_{lag}tau_Re/Im`` and
-``k_rg``/``k_az`` schema is accepted : both the SARWAVE L1B XSP and the
-historical Envisat ASAR WVI XSP L1C (xsar_slc, whose ``k_rg``/``k_az`` carry
-singleton ``tile_sample``/``tile_line`` dimensions). Several products can be
-passed to ``--xsp-nc``; the report carries one section per product plus a
-unified top-level finding.
+Three product schemas are accepted, auto-detected :
+
+* **SARWAVE L1B XSP** and the historical **Envisat ASAR WVI XSP L1C**
+  (xsar_slc, whose ``k_rg``/``k_az`` carry singleton ``tile_sample``/``tile_line``
+  dimensions), via ``xspectra_{lag}tau_Re/Im`` + ``k_rg``/``k_az``;
+* **OCN WV osw products** (``oswCartSpecRe/Im``) : the cartesian
+  cross-spectrum is stored on a sinh (non-uniform) wavenumber grid in
+  normalized (``m/m``) units and is decoded to a regular grid in rad/m by
+  :func:`cwaves.ocn_sinh.compute_ocn_sinh_cartesian`.
+
+Several products can be passed to ``--xsp-nc``; the report carries one section
+per product plus a unified top-level finding.
 
 This is the interactive companion of the round-trip unit tests
 (``tests/test_cwaves.py::test_cwave_roundtrip_*``) and of the
@@ -64,6 +71,7 @@ from matplotlib.figure import Figure  # noqa: E402
 
 from cwaves.compute_cwaves import compute_kernel  # noqa: E402
 from cwaves.config import get_default_config  # noqa: E402
+from cwaves.ocn_sinh import compute_ocn_sinh_cartesian  # noqa: E402
 from cwaves.scripts.plot_kernels import _apply_style  # noqa: E402
 
 logger = logging.getLogger("cwaves.certification_report")
@@ -183,6 +191,52 @@ def _l1b_cross_spectrum_compat(
     )
 
 
+def _product_kind(ds: xr.Dataset) -> str:
+    """Human-readable schema label of an opened product (for the report).
+
+    Args:
+        ds: open ``xarray.Dataset`` of the product.
+
+    Returns:
+        One of ``"OCN WV (cartesian sinh grid -> regular rad/m)"``,
+        ``"ASAR WVI XSP L1C (xsar_slc)"`` or ``"SARWAVE L1B XSP"``.
+    """
+    if "oswCartSpecRe" in ds.variables and "oswCartSpecIm" in ds.variables:
+        return "OCN WV (cartesian sinh grid, decoded to regular rad/m)"
+    if "tile_sample" in ds["k_rg"].dims:
+        return "ASAR WVI XSP L1C (xsar_slc)"
+    return "SARWAVE L1B XSP"
+
+
+def _load_cross_spectrum(ds: xr.Dataset, lag: int = 2) -> xr.DataArray:
+    """Build the complex one-sided cross-spectrum of one product.
+
+    Detects the product schema and dispatches : an **OCN WV** product
+    (``oswCartSpecRe/Im``) is decoded from the sinh (non-uniform, ``m/m``)
+    wavenumber grid to a regular grid in rad/m by
+    :func:`cwaves.ocn_sinh.compute_ocn_sinh_cartesian`; a **SARWAVE L1B XSP** or
+    an **Envisat ASAR WVI L1C** product (``xspectra_{lag}tau_Re/Im``) is read
+    as-is (uniform rad/m grid, see :func:`_l1b_cross_spectrum_compat`).
+
+    The returned array has the canonical ``(freq_line, freq_sample)`` dims with
+    ``k_rg`` / ``k_az`` coordinates in rad/m, matching the input contract of
+    ``compute_cwave_parameters`` (one-sided, ``k_rg >= 0``).
+
+    Args:
+        ds: open ``xarray.Dataset`` of the product.
+        lag: cross-spectrum lag index (1 or 2; default 2 = the 2-tau
+            cross-spectrum, both for ``xspectra_{lag}tau`` and ``oswLag``).
+
+    Returns:
+        The complex one-sided cross-spectrum, dims ``(freq_line, freq_sample)``.
+    """
+    if "oswCartSpecRe" in ds.variables and "oswCartSpecIm" in ds.variables:
+        xs = compute_ocn_sinh_cartesian(ds, lag=lag)
+    else:
+        xs = _l1b_cross_spectrum_compat(ds, lag=lag)
+    return xs.transpose("freq_line", "freq_sample")
+
+
 def _normalized_density(xs: xr.DataArray, kmin: float, kmax: float) -> xr.DataArray:
     """Return the normalized ``|xs|`` density projected by the library.
 
@@ -294,11 +348,26 @@ def _fig_basis_panel(
     kmax_display: float,
     res: dict[str, Any],
 ) -> bytes:
-    """Render the (recomposed | difference) pair for one basis."""
-    fig, axes = plt.subplots(1, 2, figsize=(10.0, 3.4), constrained_layout=True)
+    """Render the (original | recomposed | difference) triple for one basis.
+
+    The original and the recomposed spectra share the same white&rarr;red color
+    scale so the convergence is visible by eye; the difference panel uses a
+    symmetric diverging scale auto-limited to the max residual.
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(15.0, 3.4), constrained_layout=True)
     vmax = float(np.nanmax(f_2d))
     dmax = float(np.nanmax(np.abs(diff_2d)))
     axes[0].pcolormesh(
+        k_rg_1d,
+        k_az_1d,
+        f_2d,
+        cmap=CWMAP,
+        shading="auto",
+        vmin=0.0,
+        vmax=vmax,
+    )
+    axes[0].set_title("original  (normalized $|X_S|)$", fontsize=11)
+    axes[1].pcolormesh(
         k_rg_1d,
         k_az_1d,
         fhat_2d,
@@ -307,12 +376,12 @@ def _fig_basis_panel(
         vmin=0.0,
         vmax=vmax,
     )
-    axes[0].set_title(
+    axes[1].set_title(
         rf"recomposed  ($N_k$={res['nk']}, $N_\varphi$={res['nphi']}, "
         rf"{res['n_coeffs']} coeffs)  --  rel. L2 = {res['rel_l2']:.2%}",
         fontsize=11,
     )
-    axes[1].pcolormesh(
+    axes[2].pcolormesh(
         k_rg_1d,
         k_az_1d,
         diff_2d,
@@ -321,7 +390,7 @@ def _fig_basis_panel(
         vmin=-dmax,
         vmax=dmax,
     )
-    axes[1].set_title(
+    axes[2].set_title(
         "difference  (recomposed $- $ original)",
         fontsize=11,
     )
@@ -336,8 +405,13 @@ def _fig_basis_panel(
         label=r"$|X_S|_{\rm norm}$  (a.u.)",
     )
     fig.colorbar(
-        plt.cm.ScalarMappable(norm=mcolors.Normalize(-dmax, dmax), cmap=DIFF_CMAP),
+        plt.cm.ScalarMappable(norm=mcolors.Normalize(0.0, vmax), cmap=CWMAP),
         ax=axes[1],
+        label=r"$|X_S|_{\rm norm}$  (a.u.)",
+    )
+    fig.colorbar(
+        plt.cm.ScalarMappable(norm=mcolors.Normalize(-dmax, dmax), cmap=DIFF_CMAP),
+        ax=axes[2],
         label=r"$\Delta\, |X_S|_{\rm norm}$  (a.u.)",
     )
     return _png_bytes(fig, dpi=150)
@@ -459,8 +533,13 @@ def _product_verdict(prod: dict[str, Any]) -> str:
     return f"no basis beats the {ref_txt} reference"
 
 
-def _product_section(prod: dict[str, Any]) -> str:
-    """Assemble the per-product section (finding, curves, table, gallery)."""
+def _product_section(prod: dict[str, Any], anchor: str) -> str:
+    """Assemble the per-product section (finding, curves, table, gallery).
+
+    Args:
+        prod: the product dict (see :func:`_sweep_product`).
+        anchor: the HTML anchor id of the section heading (side-nav target).
+    """
     results: list[dict[str, Any]] = prod["results"]
     best: dict[str, Any] = prod["best"]
     order = sorted(results, key=lambda r: (r["n_coeffs"], r["nk"]))
@@ -513,11 +592,12 @@ def _product_section(prod: dict[str, Any]) -> str:
     n_pixels = prod["n_pixels"]
     kmax_display = prod["kmax_display"]
 
+    kind = prod.get("kind", "SARWAVE L1B XSP")
     return f"""
-  <h2 class="product">{prod["name"]}</h2>
-  <p class="sub">{grid_shape[0]} x {grid_shape[1]} product grid
-  ({n_pixels} pixels), one-sided cross-spectrum (lag 2, first time slice),
-  display window k<sub>x</sub> &isin; [0, {kmax_display:.4f}] rad/m.</p>
+  <h2 class="product" id="{anchor}">{prod["name"]}</h2>
+  <p class="sub"><code>{kind}</code> &mdash; {grid_shape[0]} x {grid_shape[1]}
+  product grid ({n_pixels} pixels), one-sided cross-spectrum (lag 2, first time
+  slice), display window k<sub>x</sub> &isin; [0, {kmax_display:.4f}] rad/m.</p>
   <div class="card findings">
     <h3 style="margin-top:0">Key finding</h3>
     <p>{answer}</p>
@@ -541,12 +621,13 @@ def _product_section(prod: dict[str, Any]) -> str:
       </tbody>
     </table>
   </div>
-  <h3>Recomposition and difference with the original</h3>
-  <p class="sub">For each basis : the recomposed spectrum (left, white&rarr;red,
-  shared scale) and the pointwise difference recomposed &minus; original (right,
-  diverging scale, auto-limited to the max residual). The shrinking difference
-  panels and the residual fine structure are the visual signature of the
-  orthogonal projection converging to the in-span part of the spectrum.</p>
+  <h3>Original, recomposition and difference</h3>
+  <p class="sub">For each basis : the original normalized spectrum (left,
+  white&rarr;red), the recomposed spectrum (center, same scale as the original)
+  and the pointwise difference recomposed &minus; original (right, diverging
+  scale, auto-limited to the max residual). The shrinking difference panels and
+  the residual fine structure are the visual signature of the orthogonal
+  projection converging to the in-span part of the spectrum.</p>
   <div class="gallery">
     {"".join(gallery)}
   </div>
@@ -609,8 +690,23 @@ def _build_html(products: list[dict[str, Any]], wlmax: float, wlmin: float) -> s
     else:
         closing = ""
     closing_p = f"<p>{closing}</p>" if closing else ""
-    sections = "".join(_product_section(prod) for prod in products)
+    sections = "".join(
+        _product_section(prod, f"product-{i}")
+        for i, prod in enumerate(products, start=1)
+    )
     products_list = ", ".join(f"<code>{p['name']}</code>" for p in products)
+
+    nav_items = ["<li><a href='#top'>&#8679; Top / key finding</a></li>"]
+    for i, prod in enumerate(products, start=1):
+        nav_items.append(
+            "<li><a href='#product-{i}'>{i}. {name}</a></li>".format(
+                i=i, name=prod["name"]
+            )
+        )
+    nav_items.append("<li><a href='#interpretation'>Interpretation</a></li>")
+    nav = "<nav class='sidenav'><h2>Contents</h2><ul>{items}</ul></nav>".format(
+        items="".join(nav_items)
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -619,9 +715,27 @@ def _build_html(products: list[dict[str, Any]], wlmax: float, wlmin: float) -> s
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CWAVE round-trip certification report</title>
 <style>
+  html {{ scroll-behavior: smooth; }}
   body {{ font-family: "Segoe UI", Helvetica, Arial, sans-serif; margin: 0;
          color: #1a1a1a; background: #fafafa; line-height: 1.5; }}
-  .wrap {{ max-width: 1080px; margin: 0 auto; padding: 24px 28px 64px; }}
+  nav.sidenav {{ position: fixed; top: 0; left: 0; bottom: 0; width: 272px;
+                overflow-y: auto; background: #fff; border-right: 1px solid #e2e2e2;
+                padding: 24px 14px; box-sizing: border-box; z-index: 10; }}
+  nav.sidenav h2 {{ font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+                   color: #888; margin: 0 0 10px; border: none; padding: 0; }}
+  nav.sidenav ul {{ list-style: none; margin: 0; padding: 0; }}
+  nav.sidenav li {{ margin: 3px 0; }}
+  nav.sidenav a {{ display: block; padding: 6px 9px; border-radius: 6px;
+                  color: #0b5394; text-decoration: none; font-size: 13px;
+                  word-break: break-all; }}
+  nav.sidenav a:hover {{ background: #eef6ff; }}
+  .wrap {{ max-width: 1120px; margin-left: 292px; margin-right: auto;
+          padding: 24px 28px 64px; }}
+  @media (max-width: 1080px) {{
+    nav.sidenav {{ position: static; width: auto; border-right: none;
+                  border-bottom: 1px solid #e2e2e2; }}
+    .wrap {{ margin-left: 0; max-width: 1080px; margin: 0 auto; }}
+  }}
   h1 {{ font-size: 26px; margin: 0 0 4px; }}
   h2 {{ font-size: 20px; margin: 34px 0 10px; border-bottom: 2px solid #e2e2e2;
        padding-bottom: 6px; }}
@@ -650,7 +764,8 @@ def _build_html(products: list[dict[str, Any]], wlmax: float, wlmin: float) -> s
 </style>
 </head>
 <body>
-<div class="wrap">
+{nav}
+<div class="wrap" id="top">
   <h1>CWAVE round-trip certification report</h1>
   <p class="sub">Decompose a real SAR ocean cross-spectrum into CWAVE
   coefficients, recompose it from the coefficients, and measure the error as a
@@ -659,7 +774,7 @@ def _build_html(products: list[dict[str, Any]], wlmax: float, wlmin: float) -> s
 
   <div class="card findings">
     <h2 style="margin-top:0">Key finding</h2>
-    <ul style="margin:6px 0 10px">
+    <ul class="summary" style="margin:6px 0 10px">
       {"".join(summaries)}
     </ul>
     <p>The reference 32 x 30 basis (960 coefficients) is marked in each table
@@ -672,7 +787,7 @@ def _build_html(products: list[dict[str, Any]], wlmax: float, wlmin: float) -> s
 
   {sections}
 
-  <h2>Interpretation</h2>
+  <h2 id="interpretation">Interpretation</h2>
   <div class="card">
     <p><strong>Low relative L2 is good</strong> and the error decreases
     monotonically as the basis grows : the recomposition is the orthogonal
@@ -721,9 +836,9 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs="+",
         default=[DEFAULT_XSP_NC],
         help=(
-            "one or more cross-spectrum NetCDF products (SARWAVE L1B XSP or "
-            "Envisat/xsar_slc L1C XSP), one report section per product "
-            "(default: the S1A WV1 asset in assets/)"
+            "one or more cross-spectrum NetCDF products (SARWAVE L1B XSP, "
+            "Envisat/xsar_slc L1C XSP or OCN WV osw), one report section per "
+            "product (default: the S1A WV1 asset in assets/)"
         ),
     )
     parser.add_argument(
@@ -781,12 +896,13 @@ def _sweep_product(
         no_panels: skip the per-basis figures.
 
     Returns:
-        The product dict consumed by :func:`_build_html` (name, results,
+        The product dict consumed by :func:`_build_html` (name, kind, results,
         panels, curves png, grid shape / pixels, best basis, ...).
     """
     logger.info("loading cross-spectrum: %s", xsp_nc)
     with xr.open_dataset(xsp_nc) as ds:
-        xs = _l1b_cross_spectrum_compat(ds, lag=2)
+        kind = _product_kind(ds)
+        xs = _load_cross_spectrum(ds, lag=2)
 
     f = _normalized_density(xs, kmin, kmax)
     # the kernel must be evaluated on the same (masked / dropna'd) grid as the
@@ -838,6 +954,7 @@ def _sweep_product(
     )
     return {
         "name": xsp_nc.name,
+        "kind": kind,
         "results": results,
         "panels": panels,
         "curves_png": _fig_curves(results),
