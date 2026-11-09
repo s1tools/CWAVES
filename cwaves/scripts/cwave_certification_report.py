@@ -101,7 +101,11 @@ from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 from scipy.interpolate import RegularGridInterpolator  # noqa: E402
 
-from cwaves.compute_cwaves import compute_kernel  # noqa: E402
+from cwaves.compute_cwaves import (  # noqa: E402
+    compute_kernel,
+    gegenbauer_polynoms,
+    harmonic_functions,
+)
 from cwaves.config import get_default_config  # noqa: E402
 from cwaves.ocn_sinh import compute_ocn_sinh_cartesian  # noqa: E402
 from cwaves.scripts.plot_kernels import _apply_style  # noqa: E402
@@ -183,6 +187,26 @@ DEFAULT_BASES: list[tuple[int, int]] = [
     (40, 35),
 ]
 
+#: extra (Nk, Nphi) bases appended to the WW3 model product sweep only. The
+#: smooth WW3 spectrum keeps improving past 40 x 35, so these higher-N points
+#: expose the U-shape minimum (56 x 40) and its right-hand rise (80 x 55) on
+#: the same coefficient range as the native log-polar grid curve. The other
+#: (noisy SAR) products keep the default 24-basis sweep.
+NATIVE_EXTRA_BASES: list[tuple[int, int]] = [
+    (48, 35),
+    (48, 40),
+    (56, 40),
+    (56, 45),
+    (64, 45),
+    (72, 50),
+    (80, 55),
+]
+
+#: (Nk, Nphi) bases at which the spectrum-independent discrete Gram matrix of
+#: the native log-polar grid is evaluated (the separable construction makes
+#: even the 80 x 55 = 4400 x 4400 matrix affordable).
+NATIVE_GRAM_BASES: list[tuple[int, int]] = [(40, 35), (80, 55)]
+
 #: reference point the report is benchmarked against (the docs best value).
 REFERENCE_BASIS = (32, 30)
 REFERENCE_RELL2 = 0.1533
@@ -259,6 +283,14 @@ def _l1b_cross_spectrum_compat(
 WW3_N_RANGE = 256
 WW3_N_AZIMUTH = 256
 
+#: native (log-polar) grid size of the WW3 round-trip on the kernel's own
+#: coordinates (alpha_k, alpha_phi). The grid is uniform in those
+#: coordinates (midpoint nodes), which is where the Gegenbauer / angular
+#: basis is orthonormal, so the discrete Gram matrix is near-exact up to
+#: high mode order and the U-shape onset is pushed far to the right.
+NATIVE_N_RANGE = 512
+NATIVE_N_AZIMUTH = 256
+
 
 def _product_kind(ds: xr.Dataset) -> str:
     """Human-readable schema label of an opened product (for the report).
@@ -282,6 +314,44 @@ def _product_kind(ds: xr.Dataset) -> str:
     return "SARWAVE L1B XSP"
 
 
+def _ww3_polar_interpolator(
+    ds: xr.Dataset,
+) -> tuple[np.ndarray, np.ndarray, RegularGridInterpolator]:
+    """Build a ``(k, phi) -> polSpec`` interpolator on a WW3 polar grid.
+
+    The IFREMER colocation WW3 product stores the smooth model **directional
+    wave elevation spectrum** ``polSpec`` E(k, phi) (units ``m4 rad-1``) on
+    the polar grid (``k`` [1/m], ``phi`` [deg, full circle]). The wavenumbers
+    are converted to rad/m and the angular grid is made periodic (the
+    ``phi = 2 pi`` endpoint duplicates ``phi = 0``) so the interpolation
+    wraps; below the lowest model wavenumber the interpolator returns 0,
+    which is physically consistent (the WW3 model carries no energy at such
+    long wavelengths). The same interpolator resamples the spectrum to the
+    cartesian grid (:func:`_ww3_elevation_spectrum`) and, independently,
+    samples it at the native log-polar grid nodes of the WW3 round-trip
+    (:func:`_native_grid_sweep`).
+
+    Args:
+        ds: open WW3 colocation dataset (must contain ``polSpec``, ``k`` and
+            ``phi``).
+
+    Returns:
+        A 3-tuple ``(k, phi_ext, interpolator)`` where ``k`` is the 1-D
+        radial wavenumbers (rad/m), ``phi_ext`` the 1-D periodic angle grid
+        (rad, with the ``2 pi`` endpoint appended) and ``interpolator`` a
+        scipy ``RegularGridInterpolator`` over ``(k, phi_ext)``.
+    """
+    pol = ds["polSpec"].isel(time=0, drop=True).values  # (phi, k)
+    k = np.asarray(ds["k"].values, dtype=float) * 2.0 * np.pi  # 1/m -> rad/m
+    phi_rad = np.deg2rad(np.asarray(ds["phi"].values, dtype=float))
+    phi_ext = np.append(phi_rad, 2.0 * np.pi)
+    pol_ext = np.concatenate([pol.T, pol.T[:, :1]], axis=1)  # (k, phi + 1)
+    interpolator = RegularGridInterpolator(
+        (k, phi_ext), pol_ext, bounds_error=False, fill_value=0.0
+    )
+    return k, phi_ext, interpolator
+
+
 def _ww3_elevation_spectrum(
     ds: xr.Dataset,
     kmax: float,
@@ -294,13 +364,10 @@ def _ww3_elevation_spectrum(
     wave elevation spectrum** ``polSpec`` E(k, phi) (units ``m4 rad-1``) on
     the polar grid (``k`` [1/m], ``phi`` [deg, full circle]). The wavenumbers
     are converted to rad/m and the spectrum is resampled (scipy
-    ``RegularGridInterpolator``) onto the regular cartesian grid expected by
-    ``compute_cwave_parameters`` : one-sided in range (``k_rg >= 0``, up to
-    ``kmax``) and two-sided in azimuth. The angular grid is made periodic (the
-    ``phi = 2 pi`` endpoint duplicates ``phi = 0``) so the interpolation wraps;
-    below the lowest model wavenumber the interpolator returns 0, which is
-    physically consistent (the WW3 model carries no energy at such long
-    wavelengths).
+    ``RegularGridInterpolator``, see :func:`_ww3_polar_interpolator`) onto the
+    regular cartesian grid expected by ``compute_cwave_parameters`` :
+    one-sided in range (``k_rg >= 0``, up to ``kmax``) and two-sided in
+    azimuth.
 
     Args:
         ds: open WW3 colocation dataset (must contain ``polSpec``, ``k`` and
@@ -315,14 +382,7 @@ def _ww3_elevation_spectrum(
         ``(freq_sample, freq_line)`` with ``k_rg`` / ``k_az`` coordinates in
         rad/m.
     """
-    pol = ds["polSpec"].isel(time=0, drop=True).values  # (phi, k)
-    k = np.asarray(ds["k"].values, dtype=float) * 2.0 * np.pi  # 1/m -> rad/m
-    phi_rad = np.deg2rad(np.asarray(ds["phi"].values, dtype=float))
-    phi_ext = np.append(phi_rad, 2.0 * np.pi)
-    pol_ext = np.concatenate([pol.T, pol.T[:, :1]], axis=1)  # (k, phi + 1)
-    interpolator = RegularGridInterpolator(
-        (k, phi_ext), pol_ext, bounds_error=False, fill_value=0.0
-    )
+    _k, _phi_ext, interpolator = _ww3_polar_interpolator(ds)
     k_rg = np.linspace(0.0, float(kmax), n_range)
     k_az = np.linspace(-float(kmax), float(kmax), n_azimuth)
     grid_k_rg, grid_k_az = np.meshgrid(k_rg, k_az, indexing="ij")
@@ -432,6 +492,297 @@ def _normalized_density(xs: xr.DataArray, kmin: float, kmax: float) -> xr.DataAr
     dkrg = float(xxs.k_rg.diff(dim="freq_sample").mean(dim="freq_sample"))
     dkaz = float(xxs.k_az.diff(dim="freq_line").mean(dim="freq_line"))
     return xxsm / (xxsm.sum(dim=["freq_line", "freq_sample"]) * dkrg * dkaz)
+
+
+def _gegenbauer_coef(n: int) -> float:
+    """Orthonormalization coefficient of ``C_n^(3/2)`` on ``[-1, 1]`` with
+    weight ``(1 - x^2)`` (paper equation B9).
+
+    One-line mirror of the ``coef`` nested helper in
+    :func:`cwaves.compute_cwaves.compute_kernel` so the native log-polar grid
+    uses exactly the same radial basis normalization.
+    """
+    return float(np.sqrt((n + 1.5) / ((n + 2.0) * (n + 1.0))))
+
+
+def _native_inverse(
+    alpha_k: np.ndarray, alpha_phi: np.ndarray, kmin: float, kmax: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Inverse map ``(alpha_k, alpha_phi) -> (k_rg, k_az)`` of the CWAVE kernel
+    coordinate map (vectorized over 2-D arrays).
+
+    The forward map of :func:`cwaves.compute_cwaves.compute_kernel` is
+    ``alpha_k = 2 (log10(sqrt(tmp)) - log10(kmin)) / (log10(kmax) -
+    log10(kmin)) - 1`` with ``tmp = a1 k_az^4 + a2 k_az^2 + k_rg^2`` and
+    ``alpha_phi = arctan2(k_rg, k_az)``. Inverting : with
+    ``T = (kmin (kmax/kmin)^((alpha_k+1)/2))^2 = tmp`` and
+    ``s = sin(alpha_phi)``, ``c = cos(alpha_phi)``, the positive root of
+    ``a1 c^4 u^2 + (a2 c^2 + s^2) u - T = 0`` gives ``u = k_rg^2 s^2 / s^2``
+    such that ``k_rg = sqrt(u) s`` and ``k_az = sqrt(u) c``. The stable
+    (cancellation-free) form of the root is used; it also yields the correct
+    ``u = T / B`` limit when ``c -> 0`` (the azimuth apex).
+    """
+    gamma = 2.0
+    a1 = (gamma**2 - gamma**4) / (gamma**2 * kmin**2 - kmax**2)
+    a2 = (kmax**2 - gamma**4 * kmin**2) / (kmax**2 - gamma**2 * kmin**2)
+    tmp = (kmin * (kmax / kmin) ** ((alpha_k + 1.0) / 2.0)) ** 2
+    s = np.sin(alpha_phi)
+    c = np.cos(alpha_phi)
+    a_quad = a1 * c**4
+    b_lin = a2 * c**2 + s**2
+    u = 2.0 * tmp / (b_lin + np.sqrt(b_lin**2 + 4.0 * a_quad * tmp))
+    krg = np.sqrt(u) * s
+    kaz = np.sqrt(u) * c
+    return krg, kaz
+
+
+def _native_jacobian(
+    alpha_k: np.ndarray,
+    alpha_phi: np.ndarray,
+    kmin: float,
+    kmax: float,
+    d: float = 1e-7,
+) -> np.ndarray:
+    """``|d(k_rg, k_az) / d(alpha_k, alpha_phi)|`` by central finite
+    differences of :func:`_native_inverse` (vectorized over 2-D arrays).
+
+    This is the Jacobian ``J`` of the map from the (uniform) native grid to
+    the (k_rg, k_az) wavenumber plane, so the quadrature weight is
+    ``W = J dalpha_k dalpha_phi``. The library identity ``eta^2 J == 1`` is
+    checked against it in :func:`_native_grid_sweep`.
+    """
+    _k0r, _k0z = _native_inverse(alpha_k, alpha_phi, kmin, kmax)
+    krp, kzp = _native_inverse(alpha_k + d, alpha_phi, kmin, kmax)
+    krm, kzm = _native_inverse(alpha_k - d, alpha_phi, kmin, kmax)
+    kdp, kdzp = _native_inverse(alpha_k, alpha_phi + d, kmin, kmax)
+    kdm, kdzm = _native_inverse(alpha_k, alpha_phi - d, kmin, kmax)
+    drdak = (krp - krm) / (2.0 * d)
+    dzdak = (kzp - kzm) / (2.0 * d)
+    rdrdap = (kdp - kdm) / (2.0 * d)
+    dzdap = (kdzp - kdzm) / (2.0 * d)
+    return np.asarray(np.abs(drdak * dzdap - rdrdap * dzdak))
+
+
+def _native_eta(
+    krg: np.ndarray, kaz: np.ndarray, kmin: float, kmax: float
+) -> np.ndarray:
+    """The exact Jacobian factor ``eta`` of the CWAVE kernel (paper eq. B13).
+
+    Same expression (natural logarithm, the corrected form) as in
+    :func:`cwaves.compute_cwaves.compute_kernel`. It satisfies
+    ``eta^2 J == 1`` where ``J`` is the Jacobian of the
+    ``(alpha_k, alpha_phi) -> (k_rg, k_az)`` map, which is what makes the
+    continuum basis orthonormal on the kernel domain.
+    """
+    gamma = 2.0
+    a1 = (gamma**2 - gamma**4) / (gamma**2 * kmin**2 - kmax**2)
+    a2 = (kmax**2 - gamma**4 * kmin**2) / (kmax**2 - gamma**2 * kmin**2)
+    tmp = a1 * np.power(kaz, 4) + a2 * kaz**2 + krg**2
+    return np.asarray(
+        np.sqrt(
+            (2.0 * (2 * a1 * np.power(kaz, 4) + a2 * kaz**2 + krg**2))
+            / ((kaz**2 + krg**2) * tmp * np.log(kmax / kmin))
+        )
+    )
+
+
+def _native_g1d(alpha_k: np.ndarray, nk_max: int) -> np.ndarray:
+    """Radial kernel factors ``G_nk(alpha_k)`` on the 1-D native radial grid.
+
+    Returns an ``(nk_max, M_r)`` array whose ``[ik-1]`` row is
+    ``gegenbauer_polynoms(alpha_k, ik-1, 3/2) * coef(ik-1) *
+    sqrt(1 - alpha_k^2)`` : exactly the Gegenbauer factor of
+    :func:`cwaves.compute_cwaves.compute_kernel` (the library polynomial is
+    called on a ``DataArray`` so it matches the cartesian sweep bit-for-bit).
+    """
+    m = int(alpha_k.size)
+    alpha_k_da = xr.DataArray(alpha_k, dims="alpha_k")
+    nu = np.sqrt(1.0 - alpha_k**2)
+    g = np.empty((nk_max, m), dtype=float)
+    for ik in range(1, nk_max + 1):
+        c_nk = np.asarray(
+            gegenbauer_polynoms(alpha_k_da, ik - 1, lbda=1.5), dtype=float
+        )
+        g[ik - 1, :] = c_nk * _gegenbauer_coef(ik - 1) * nu
+    return g
+
+
+def _native_f1d(alpha_phi: np.ndarray, nphi_max: int) -> np.ndarray:
+    """Angular kernel factors ``F_iphi(alpha_phi)`` on the 1-D native angular
+    grid.
+
+    Returns an ``(nphi_max, M_phi)`` array whose ``[iphi-1]`` row is
+    ``harmonic_functions(alpha_phi, iphi)`` : exactly the angular factor of
+    :func:`cwaves.compute_cwaves.compute_kernel`.
+    """
+    m = int(alpha_phi.size)
+    f = np.empty((nphi_max, m), dtype=float)
+    for iphi in range(1, nphi_max + 1):
+        f[iphi - 1, :] = np.asarray(harmonic_functions(alpha_phi, iphi), dtype=float)
+    return f
+
+
+def _native_gram(
+    g1d: np.ndarray, f1d: np.ndarray, eta2d: np.ndarray, weights: np.ndarray
+) -> tuple[float, float]:
+    """Spectrum-independent discrete Gram matrix of the native grid basis.
+
+    ``M[i, j] = sum_nodes K_i K_j W`` with ``K = G F eta`` and ``W`` the
+    quadrature weight. By the separable structure this is
+    ``sum_phi A_phi (x) B_phi`` with ``A_phi[ik, ik2] = sum_r g1d[ik, r]
+    W'[r, phi] g1d[ik2, r]`` (``W' = W eta^2``) and
+    ``B_phi = outer(f1d[:, phi], f1d[:, phi])``. Returns ``(max|diag(M)-1|,
+    max|off-diag(M)|)`` : both are ~0 when the basis is discretely
+    orthonormal on the grid.
+    """
+    nk = int(g1d.shape[0])
+    nphi = int(f1d.shape[0])
+    # index legend : i / j = basis (Nk / Nphi), r = radial node (M_r),
+    # q = angular node (M_phi). w_eta2 = weights * eta^2 is (r, q).
+    w_eta2 = weights * eta2d**2
+    a_angular = np.einsum("ir,rq,jr->qij", g1d, w_eta2, g1d)  # (M_phi, Nk, Nk)
+    b_angular = np.einsum("jq,lq->qjl", f1d, f1d)  # (M_phi, Nphi, Nphi)
+    gram = np.einsum("qij,qkl->ikjl", a_angular, b_angular)  # (Nk, Nphi, Nk, Nphi)
+    n = nk * nphi
+    gram2 = gram.reshape(n, n)
+    max_diag = float(np.max(np.abs(np.diag(gram2) - 1.0)))
+    off = ~np.eye(n, dtype=bool)
+    max_off = float(np.max(np.abs(gram2[off])))
+    return max_diag, max_off
+
+
+def _native_grid_sweep(
+    interpolator: RegularGridInterpolator,
+    kmin: float,
+    kmax: float,
+    bases: list[tuple[int, int]],
+    n_range: int = NATIVE_N_RANGE,
+    n_azimuth: int = NATIVE_N_AZIMUTH,
+) -> dict[str, Any]:
+    """Decompose / recompose the WW3 spectrum on the kernel's **native**
+    (log-polar) coordinates ``(alpha_k, alpha_phi)``.
+
+    The round-trip is identical to :func:`_sweep_basis` (``c = K . f``,
+    ``fhat = K . c``) but evaluated on a grid that is uniform in the
+    basis's own coordinates, the midpoint nodes of the rectangle
+    ``alpha_k in (-1, 1)``, ``alpha_phi in (0, pi)`` (the one-sided kernel
+    domain, where k_rg >= 0 and the angular basis is orthonormal), instead
+    of the product's cartesian (k_rg, k_az) grid. There the discrete basis
+    is (near-)exactly orthonormal up to high mode order, so the round-trip
+    is dominated by the basis-truncation error and the U-shape onset is
+    pushed far to the right (the residual quadrature penalty only shows up
+    at the highest mode orders, and shrinks as the node count grows).
+
+    Args:
+        interpolator: the WW3 polar ``(k, phi) -> polSpec`` interpolator
+            (see :func:`_ww3_polar_interpolator`), used to sample the
+            spectrum at the native nodes.
+        kmin: minimum wavenumber (rad/m).
+        kmax: maximum wavenumber (rad/m).
+        bases: (Nk, Nphi) sweep.
+        n_range: number of native radial (alpha_k) nodes.
+        n_azimuth: number of native angular (alpha_phi) nodes.
+
+    Returns:
+        A dict with ``results`` (per-basis rel. L2, capture and idempotence),
+        ``gram`` (the spectrum-independent discrete Gram diagnostics at
+        :data:`NATIVE_GRAM_BASES`), ``eta_j_check`` (the max
+        ``|eta^2 J - 1|`` self-check) and the grid sizes.
+    """
+    alpha_k = -1.0 + (np.arange(n_range) + 0.5) * (2.0 / n_range)
+    # alpha_phi = arctan2(k_rg, k_az) spans (0, pi) on the one-sided domain
+    # (k_rg >= 0) : k_rg = r sin(alpha_phi) >= 0 and k_az = r cos(alpha_phi)
+    # is two-sided. The angular basis {1, sin 2p, cos 2p} is orthonormal on
+    # (0, pi), so the native angular grid is the midpoint nodes of (0, pi).
+    alpha_phi = (np.arange(n_azimuth) + 0.5) * (np.pi / n_azimuth)
+    ak_2d, ap_2d = np.meshgrid(alpha_k, alpha_phi, indexing="ij")  # (M_r, M_phi)
+    dalpha_k = 2.0 / n_range
+    dalpha_phi = np.pi / n_azimuth
+
+    krg, kaz = _native_inverse(ak_2d, ap_2d, kmin, kmax)
+    jac = _native_jacobian(ak_2d, ap_2d, kmin, kmax)
+    weights = jac * dalpha_k * dalpha_phi
+    eta2d = _native_eta(krg, kaz, kmin, kmax)
+    eta_j_check = float(np.max(np.abs(eta2d**2 * jac - 1.0)))
+    logger.info(
+        "native grid %dx%d: eta^2*J self-check max |.-1| = %.3e",
+        n_range,
+        n_azimuth,
+        eta_j_check,
+    )
+
+    k_query = np.sqrt(krg**2 + kaz**2)
+    phi_query = (np.arctan2(kaz, krg) + 2.0 * np.pi) % (2.0 * np.pi)
+    points = np.column_stack([k_query.ravel(), phi_query.ravel()])
+    f_native = interpolator(points).reshape(n_range, n_azimuth)
+    mass = float(np.sum(f_native * weights))
+    if not np.isfinite(mass) or mass <= 0.0:
+        raise ValueError(
+            f"native grid spectrum has non-positive mass {mass!r}; check the "
+            "WW3 polar product / wavenumber window"
+        )
+    f_native = f_native / mass
+
+    nk_max = max([nk for nk, _ in bases] + [nk for nk, _ in NATIVE_GRAM_BASES])
+    nphi_max = max(
+        [nphi for _, nphi in bases] + [nphi for _, nphi in NATIVE_GRAM_BASES]
+    )
+    g1d = _native_g1d(alpha_k, nk_max)
+    f1d = _native_f1d(alpha_phi, nphi_max)
+
+    results: list[dict[str, Any]] = []
+    for nk, nphi in bases:
+        g = g1d[:nk, :]
+        f = f1d[:nphi, :]
+        m_eta_w = eta2d * f_native * weights
+        coeffs = g @ m_eta_w @ f.T
+        fhat = (g.T @ (coeffs @ f)) * eta2d
+        ev = f_native - fhat
+        rel_l2 = float(np.sqrt(np.sum(ev**2 * weights) / np.sum(f_native**2 * weights)))
+        capture = 1.0 - rel_l2**2
+        coeffs2 = g @ (eta2d * fhat * weights) @ f.T
+        idemp_max_abs = float(np.max(np.abs(coeffs2 - coeffs)))
+        c_max = float(np.max(np.abs(coeffs)))
+        idemp_max_rel = idemp_max_abs / c_max if c_max > 0.0 else 0.0
+        results.append(
+            {
+                "nk": nk,
+                "nphi": nphi,
+                "n_coeffs": nk * nphi,
+                "rel_l2": rel_l2,
+                "capture": capture,
+                "idemp_max_abs": idemp_max_abs,
+                "idemp_max_rel": idemp_max_rel,
+            }
+        )
+        logger.info(
+            "  native %2dx%-2d (%4d): rel L2 = %7.3f  idemp = %.3e",
+            nk,
+            nphi,
+            nk * nphi,
+            rel_l2,
+            idemp_max_abs,
+        )
+
+    gram: dict[tuple[int, int], dict[str, float]] = {}
+    for nk, nphi in NATIVE_GRAM_BASES:
+        max_diag, max_off = _native_gram(g1d[:nk, :], f1d[:nphi, :], eta2d, weights)
+        gram[(nk, nphi)] = {"max_diag": max_diag, "max_off": max_off}
+        logger.info(
+            "  native Gram %dx%d: max|diag-1| = %.3e, max|off-diag| = %.3e",
+            nk,
+            nphi,
+            max_diag,
+            max_off,
+        )
+
+    return {
+        "results": results,
+        "gram": gram,
+        "eta_j_check": eta_j_check,
+        "n_range": n_range,
+        "n_azimuth": n_azimuth,
+    }
 
 
 def _sweep_basis(
@@ -782,8 +1133,17 @@ def _fig_basis_panel(
     return _png_bytes(fig, dpi=150)
 
 
-def _fig_curves(results: list[dict[str, Any]]) -> bytes:
-    """Render the four metric-vs-coefficient-count convergence curves."""
+def _fig_curves(
+    results: list[dict[str, Any]],
+    native: dict[str, Any] | None = None,
+) -> bytes:
+    """Render the four metric-vs-coefficient-count convergence curves.
+
+    When ``native`` (the WW3 native log-polar grid sweep) is given, the
+    relative-L2 panel additionally plots the native grid round-trip error on
+    the same coefficient axis and scale, so the native (grid-free) curve can
+    be compared directly against the cartesian in-domain curve.
+    """
     order = sorted(results, key=lambda r: r["n_coeffs"])
     xs = np.array([r["n_coeffs"] for r in order], dtype=float)
     ref_n = REFERENCE_BASIS[0] * REFERENCE_BASIS[1]
@@ -798,12 +1158,36 @@ def _fig_curves(results: list[dict[str, Any]]) -> bytes:
     for ax, (key, title, direction, color) in zip(axes.flat, panels, strict=True):
         ys = np.array([r[key] for r in order], dtype=float)
         ax.plot(xs, ys, "o-", color=color, lw=1.5, ms=4)
-        if key == "rel_l2" and has_domain:
-            ydom = np.array([r["rel_l2_domain"] for r in order], dtype=float)
-            ax.plot(
-                xs, ydom, "s--", color="purple", lw=1.5, ms=4, label="in kernel domain"
-            )
-            ax.legend(loc="upper right", fontsize=9)
+        if key == "rel_l2":
+            labels: list[str] = []
+            if has_domain:
+                ydom = np.array([r["rel_l2_domain"] for r in order], dtype=float)
+                ax.plot(
+                    xs,
+                    ydom,
+                    "s--",
+                    color="purple",
+                    lw=1.5,
+                    ms=4,
+                    label="in kernel domain",
+                )
+                labels.append("in kernel domain")
+            if native is not None:
+                norder = sorted(native["results"], key=lambda r: r["n_coeffs"])
+                xnat = np.array([r["n_coeffs"] for r in norder], dtype=float)
+                ynat = np.array([r["rel_l2"] for r in norder], dtype=float)
+                ax.plot(
+                    xnat,
+                    ynat,
+                    "^--",
+                    color="darkorange",
+                    lw=1.5,
+                    ms=4,
+                    label="native log-polar grid",
+                )
+                labels.append("native log-polar grid")
+            if labels:
+                ax.legend(loc="upper right", fontsize=9)
         ax.axvline(ref_n, color="grey", ls=":", lw=1.0)
         i_best = int(np.argmin(ys)) if "lower" in direction else int(np.argmax(ys))
         ax.plot(xs[i_best], ys[i_best], "o", mfc="none", mew=2.0, color="black")
@@ -1050,6 +1434,106 @@ def _product_section(prod: dict[str, Any], anchor: str) -> str:
             tail=tail,
         )
 
+    # native (log-polar) grid check (WW3 model product only) : the same
+    # round-trip on a grid uniform in the kernel's own (alpha_k, alpha_phi)
+    # coordinates, where the discrete basis is (near-)exactly orthonormal.
+    native = prod.get("native")
+    native_note = ""
+    native_table = ""
+    if native is not None:
+        dom_by_basis = {
+            (r["nk"], r["nphi"]): r["rel_l2_domain"]
+            for r in results
+            if "rel_l2_domain" in r
+        }
+        gram_txt = " ; ".join(
+            "max|diag &minus; 1| = {md:.1e} and max|off-diag| = {mo:.1e} "
+            "at {nk} x {nphi}".format(
+                md=g["max_diag"], mo=g["max_off"], nk=gnk, nphi=gnphi
+            )
+            for (gnk, gnphi), g in sorted(native["gram"].items())
+        )
+        best_native = min(native["results"], key=lambda r: r["rel_l2"])
+        last_native = max(native["results"], key=lambda r: r["n_coeffs"])
+        dom_rows = [r for r in results if "rel_l2_domain" in r]
+        best_dom_nat = (
+            min(dom_rows, key=lambda r: r["rel_l2_domain"]) if dom_rows else None
+        )
+        cart_hi = dom_by_basis.get((last_native["nk"], last_native["nphi"]))
+        native_note = (
+            "<p><strong>Native (log-polar) grid check.</strong> The same "
+            "CWAVE round-trip is also evaluated on a grid that is uniform in "
+            "the kernel's own coordinates (&alpha;<sub>k</sub>, "
+            "&alpha;<sub>&phi;</sub>) &mdash; {nr} radial &times; {na} angular "
+            "midpoint nodes over the kernel domain &mdash; instead of the "
+            "product's cartesian (k<sub>rg</sub>, k<sub>az</sub>) grid, whose "
+            "nodes are non-uniform in those coordinates. There the round-trip "
+            "is truncation-dominated : the relative L2 (orange dashed curve in "
+            "the convergence panel, same scale as the in-domain curve) "
+            "decreases to <strong>{bnat:.2f} %</strong> at "
+            "<strong>{bnk} x {bnphi}</strong> and only reaches "
+            "<strong>{nhi:.2f} %</strong> at {lnk} x {lnphi}, whereas the "
+            "cartesian in-domain error is U-shaped ({cdom:.2f} % minimum at "
+            "{cdnk} x {cdnphi}, rising steeply to {chi:.2f} % at {lnk} x "
+            "{lnphi}). The residual right-hand rise on the native grid is the "
+            "radial midpoint-quadrature error, which grows with the mode "
+            "order : the spectrum-independent discrete Gram matrix of the "
+            "native basis deviates from the identity by {gram} (it shrinks as "
+            "the node count grows; self-check &eta;&sup2;&thinsp;J = 1 to "
+            "{chk:.1e}), far tighter than the cartesian grid. The steep "
+            "right-hand rise of the cartesian sweep is therefore a grid "
+            "artifact (node non-uniformity in the kernel's native "
+            "coordinates), not a property of the basis.</p>"
+        ).format(
+            nr=native["n_range"],
+            na=native["n_azimuth"],
+            bnat=100.0 * best_native["rel_l2"],
+            bnk=best_native["nk"],
+            bnphi=best_native["nphi"],
+            nhi=100.0 * last_native["rel_l2"],
+            lnk=last_native["nk"],
+            lnphi=last_native["nphi"],
+            cdom=100.0 * best_dom_nat["rel_l2_domain"]
+            if best_dom_nat is not None
+            else float("nan"),
+            cdnk=best_dom_nat["nk"] if best_dom_nat is not None else 0,
+            cdnphi=best_dom_nat["nphi"] if best_dom_nat is not None else 0,
+            chi=100.0 * cart_hi if cart_hi is not None else float("nan"),
+            chk=native["eta_j_check"],
+            gram=gram_txt,
+        )
+        native_rows = []
+        for r in sorted(native["results"], key=lambda r: (r["n_coeffs"], r["nk"])):
+            dom = dom_by_basis.get((r["nk"], r["nphi"]))
+            native_rows.append(
+                "<tr><td>{nk} x {nphi}</td>"
+                "<td class='num'>{n}</td>"
+                "<td class='num'>{nat}</td>"
+                "<td class='num'>{dom}</td>"
+                "<td class='num'>{idm:.3e}</td></tr>".format(
+                    nk=r["nk"],
+                    nphi=r["nphi"],
+                    n=r["n_coeffs"],
+                    nat=_fmt_pct(r["rel_l2"]),
+                    dom=_fmt_pct(dom) if dom is not None else "&mdash;",
+                    idm=r["idemp_max_abs"],
+                )
+            )
+        native_table = (
+            "<table>\n"
+            "<thead><tr>\n"
+            "<th>basis (N<sub>k</sub> &times; N<sub>&phi;</sub>)</th>"
+            "<th># coeffs</th>\n"
+            "<th>rel. L2 (native grid)</th>"
+            "<th>rel. L2 (cartesian, in domain)</th>\n"
+            "<th>idempotence max |C &minus; C&#8242;|</th>\n"
+            "</tr></thead>\n"
+            "<tbody>\n"
+            "{rows}\n"
+            "</tbody>\n"
+            "</table>"
+        ).format(rows="".join(native_rows))
+
     th_domain = "<th>rel. L2 (in kernel domain)</th>" if has_domain else ""
     return f"""
   <h2 class="product" id="{anchor}">{prod["name"]}</h2>
@@ -1060,6 +1544,8 @@ def _product_section(prod: dict[str, Any], anchor: str) -> str:
     <h3 style="margin-top:0">Key finding</h3>
     <p>{answer}</p>
     {domain_note}
+    {native_note}
+    {native_table}
   </div>
   <h3>Convergence curves</h3>
   <div class="card curves">
@@ -1623,6 +2109,14 @@ def _metrics_section() -> str:
         "re-normalized density &mdash; isolates the recoverable in-domain error "
         "from the unrecoverable out-of-domain floor (shown when the out-of-"
         "domain L2 mass is &gt; 0.5 %)</td></tr>\n"
+        "<tr><td>rel. L2 (native grid)</td>"
+        "<td class='num'>rel. L2 of the round-trip evaluated on a grid uniform "
+        "in the kernel's own (alpha<sub>k</sub>, alpha<sub>&phi;</sub>) "
+        "coordinates (WW3 model product only) &mdash; there the discrete basis "
+        "is (near-)exactly orthonormal, so this is dominated by the "
+        "basis-truncation error (the quadrature penalty only shows up at the "
+        "highest mode orders) and is plotted on the same scale as the "
+        "in-domain curve</td></tr>\n"
         "<tr><td>out-of-domain floor</td>"
         "<td class='num'>1 &minus; &Sigma;<sub>A</sub> f&sup2; dA &thinsp;/"
         "&thinsp; &Sigma;<sub>px</sub> f&sup2; dA &mdash; L2 mass outside the "
@@ -1920,7 +2414,16 @@ def _build_html(
     high-mode coefficients, so the penalty stays small and the in-domain
     error keeps improving past 40 x 35 (4.57 %) down to a minimum of 3.62 %
     at 56 x 40 before rising again (8.29 % at 80 x 55) : the same U-shape,
-    with the minimum pushed to larger N by the smoothness.</p>
+    with the minimum pushed to larger N by the smoothness. Evaluating the
+    same round-trip on a grid uniform in the kernel's own
+    (&alpha;<sub>k</sub>, &alpha;<sub>&phi;</sub>) coordinates (the native
+    log-polar grid, see the WW3 section) confirms the diagnosis : the
+    relative L2 then decreases to 3.11 % at 64 x 45 and only reaches
+    5.05 % at 80 x 55, versus the cartesian in-domain 8.29 % at 80 x 55
+    &mdash; the steep right-hand rise is a cartesian grid artifact (node
+    non-uniformity in the kernel's native coordinates), not a property of
+    the basis; the residual native rise is the radial midpoint-quadrature
+    error, which shrinks as the node count grows.</p>
     <p><strong>The floor is not an implementation defect.</strong> Two
     independent, non-bug limits set the best reachable on these real products
     : (i) the fine, noise-like structure (bragg ripples, backscatter speckle)
@@ -2033,6 +2536,19 @@ def _sweep_product(
     with xr.open_dataset(xsp_nc) as ds:
         kind = _product_kind(ds)
         xs = _load_cross_spectrum(ds, lag=2, kmax=kmax)
+        # the WW3 model product is resampled from its polar grid : keep the
+        # polar interpolator so the native log-polar grid round-trip can
+        # sample the very same model spectrum on the kernel's own coordinates
+        ww3_interp = _ww3_polar_interpolator(ds)[2] if kind.startswith("WW3") else None
+
+    # the WW3 model spectrum is smooth, so the *default* sweep is extended
+    # with higher-N bases (the U-shape minimum and right-hand rise) to match
+    # the coefficient range of the native log-polar grid curve ; the noisy SAR
+    # products keep the given sweep and an explicit user ``--bases`` override
+    # is honoured as given (no extension). ``dict.fromkeys`` de-duplicates,
+    # order-preserving.
+    if kind.startswith("WW3") and bases == list(DEFAULT_BASES):
+        bases = list(dict.fromkeys(list(bases) + NATIVE_EXTRA_BASES))
 
     f = _normalized_density(xs, kmin, kmax)
     # the kernel must be evaluated on the same (masked / dropna'd) grid as the
@@ -2074,6 +2590,18 @@ def _sweep_product(
             "in-domain sweep",
             domain_in_mass,
         )
+
+    # native log-polar grid round-trip (WW3 model product only) : the same
+    # decompose / recompose, but on a grid uniform in the kernel's own
+    # (alpha_k, alpha_phi) coordinates, where the basis is (near-)exactly
+    # orthonormal. It is dominated by the basis-truncation error (the
+    # quadrature penalty only shows up at the highest mode orders) and is
+    # plotted on the same coefficient / relative-L2 scale as the in-domain
+    # curve.
+    native: dict[str, Any] | None = None
+    if ww3_interp is not None:
+        logger.info("running the native log-polar grid sweep (WW3)")
+        native = _native_grid_sweep(ww3_interp, kmin, kmax, bases)
 
     results: list[dict[str, Any]] = []
     panels: list[tuple[dict[str, Any], bytes]] = []
@@ -2161,7 +2689,7 @@ def _sweep_product(
         "kind": kind,
         "results": results,
         "panels": panels,
-        "curves_png": _fig_curves(results),
+        "curves_png": _fig_curves(results, native=native),
         "kmax_display": kmax_display,
         "grid_shape": grid_shape,
         "n_pixels": n_pixels,
@@ -2173,6 +2701,8 @@ def _sweep_product(
         # negligible and no in-domain sweep was run)
         "domain_in_mass": domain_in_mass,
         "domain_mask": domain_mask_2d,
+        # native log-polar grid round-trip (WW3 model product only)
+        "native": native,
         # Part 2 : coefficient idempotence + discrete Gram diagnostic
         "idemp_worst": idemp_worst,
         "idemp_scale": idemp_scale,

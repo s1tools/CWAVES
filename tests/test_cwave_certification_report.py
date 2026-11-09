@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 import pytest
 import xarray as xr
+from cwaves.scripts import cwave_certification_report as ccr
 from cwaves.scripts.cwave_certification_report import (
     GRAM_BASIS,
     SCALING_RATIO_MAX,
@@ -26,6 +27,11 @@ from cwaves.scripts.cwave_certification_report import (
     _l1b_cross_spectrum_compat,
     _load_cross_spectrum,
     _metrics_section,
+    _native_eta,
+    _native_f1d,
+    _native_g1d,
+    _native_grid_sweep,
+    _native_inverse,
     _normalized_density,
     _parse_bases,
     _png_bytes,
@@ -33,6 +39,7 @@ from cwaves.scripts.cwave_certification_report import (
     _refinement_demo,
     _sweep_basis,
     _sweep_product,
+    _ww3_polar_interpolator,
     entrypoint,
 )
 
@@ -1289,6 +1296,220 @@ def test_sweep_product_kernel_domain(tmp_path):
     )
     assert np.isfinite(prod["gram_diag"])
     assert np.isfinite(prod["gram_off"])
+
+
+# ---------------------------------------------------------------------------
+# native (log-polar) grid round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_native_inverse_roundtrip():
+    # the inverse map lands inside the kernel domain and round-trips the
+    # (alpha_k, alpha_phi) coordinates
+    rng = np.random.default_rng(0)
+    ak = rng.uniform(-0.99, 0.99, 500)
+    # alpha_phi = arctan2(k_rg, k_az) spans (0, pi) on the one-sided domain
+    ap = rng.uniform(1e-3, np.pi - 1e-3, 500)
+    krg, kaz = _native_inverse(ak, ap, KMIN, KMAX)
+    assert (krg >= 0.0).all()
+    gamma = 2.0
+    a1 = (gamma**2 - gamma**4) / (gamma**2 * KMIN**2 - KMAX**2)
+    a2 = (KMAX**2 - gamma**4 * KMIN**2) / (KMAX**2 - gamma**2 * KMIN**2)
+    tmp = a1 * kaz**4 + a2 * kaz**2 + krg**2
+    ak_back = (
+        2
+        * (np.log10(np.sqrt(tmp)) - np.log10(KMIN))
+        / (np.log10(KMAX) - np.log10(KMIN))
+        - 1
+    )
+    ap_back = np.arctan2(krg, kaz)
+    assert float(np.max(np.abs(ak_back - ak))) < 1e-9
+    assert float(np.max(np.abs(ap_back - ap))) < 1e-9
+
+
+def test_native_kernel_factors_match_library():
+    # the factorized kernel G F eta on the native nodes equals the library
+    # compute_kernel evaluated on the same (k_rg, k_az) nodes
+    from cwaves.compute_cwaves import compute_kernel
+
+    mr = mp = 40
+    ak = -1.0 + (np.arange(mr) + 0.5) * (2.0 / mr)
+    # the native angular grid is the midpoint nodes of (0, pi)
+    ap = (np.arange(mp) + 0.5) * (np.pi / mp)
+    ak_2d, ap_2d = np.meshgrid(ak, ap, indexing="ij")
+    krg, kaz = _native_inverse(ak_2d, ap_2d, KMIN, KMAX)
+    nk, nphi = 6, 5
+    g1d = _native_g1d(ak, nk)  # (nk, mr)
+    f1d = _native_f1d(ap, nphi)  # (nphi, mp)
+    eta2d = _native_eta(krg, kaz, KMIN, KMAX)
+    lib = compute_kernel(
+        xr.DataArray(krg, dims=("r", "p")),
+        xr.DataArray(kaz, dims=("r", "p")),
+        KMIN,
+        KMAX,
+        cwave_Nk=nk,
+        cwave_Nphi=nphi,
+    )["cwave_kernel"]  # dims (k_gp, r, p, phi_hf)
+    our = g1d[:, None, :, None] * f1d[None, :, None, :] * eta2d[None, None, :, :]
+    theirs = np.transpose(lib.values, (0, 3, 1, 2))  # (nk, nphi, r, p)
+    assert np.allclose(our, theirs, rtol=1e-9, atol=1e-12)
+
+
+def test_native_grid_sweep_synthetic(tmp_path, monkeypatch):
+    nc = tmp_path / "ww3.nc"
+    _make_ww3_product(str(nc))
+    with xr.open_dataset(nc) as ds:
+        interp = _ww3_polar_interpolator(ds)[2]
+    # small grid + a tiny Gram basis to keep the test fast / light
+    monkeypatch.setattr(ccr, "NATIVE_GRAM_BASES", [(4, 5)])
+    nat = _native_grid_sweep(
+        interp, KMIN, KMAX, [(2, 3), (4, 5), (8, 8)], n_range=128, n_azimuth=64
+    )
+    for r in nat["results"]:
+        assert 0.0 <= r["capture"] <= 1.0 + 1e-9
+        assert r["idemp_max_abs"] >= 0.0
+    # the smooth synthetic spectrum : rel L2 falls as the basis grows
+    rel = [r["rel_l2"] for r in sorted(nat["results"], key=lambda r: r["n_coeffs"])]
+    assert rel[-1] < rel[0]
+    # the eta^2 J self-check is tiny (the library identity)
+    assert nat["eta_j_check"] < 1e-5
+    # the Gram diagnostics are present for the (patched) reference bases
+    assert set(nat["gram"].keys()) == {(4, 5)}
+    assert nat["gram"][(4, 5)]["max_diag"] >= 0.0
+
+
+def test_sweep_product_native_ww3(tmp_path):
+    # the WW3 product dict carries the native sweep ; a SAR product does not
+    from pathlib import Path
+
+    nc = tmp_path / "ww3.nc"
+    _make_ww3_product(str(nc))
+    # an explicit (non-default) base list is honoured as given (no extension)
+    prod = _sweep_product(Path(nc), KMIN, KMAX, [(2, 3)], no_panels=True)
+    assert prod["native"] is not None
+    assert prod["native"]["n_range"] == ccr.NATIVE_N_RANGE
+    assert len(prod["results"]) == 1
+    # the native sweep runs on the same (given) base list
+    assert len(prod["native"]["results"]) == 1
+    # the SAR L1B XSP product carries no native sweep
+    nc2 = tmp_path / "l1b.nc"
+    _make_xsp_product(str(nc2))
+    prod2 = _sweep_product(Path(nc2), KMIN, KMAX, [(2, 3)], no_panels=True)
+    assert prod2["native"] is None
+
+
+def test_sweep_product_ww3_default_bases_extended(tmp_path, monkeypatch):
+    # the *default* WW3 sweep is extended with NATIVE_EXTRA_BASES (an explicit
+    # user sweep is not); the heavy per-basis work is stubbed for speed
+    from pathlib import Path
+
+    def _sweep_basis_stub(f, k_rg, k_az, kmin, kmax, nk, nphi, with_fields):
+        return {
+            "nk": nk,
+            "nphi": nphi,
+            "n_coeffs": nk * nphi,
+            "rel_l2": 0.1,
+            "capture": 0.99,
+            "max_pix": 0.01,
+            "within_half": 0.5,
+            "parseval_gap": 1e-6,
+            "idemp_max_abs": 1e-3,
+            "idemp_max_rel": 1e-4,
+        }
+
+    monkeypatch.setattr(ccr, "_sweep_basis", _sweep_basis_stub)
+    monkeypatch.setattr(
+        ccr,
+        "_idempotence_scaling",
+        lambda *a, **kw: {
+            "e1": 1e-3,
+            "e2": 5e-4,
+            "ratio": 0.5,
+            "floor": 0.0,
+            "floor_frac": 0.0,
+            "truncated": False,
+            "status": "PASS",
+        },
+    )
+    monkeypatch.setattr(ccr, "_gram_diagnostic", lambda *a, **kw: (1e-2, 1e-2))
+    monkeypatch.setattr(ccr, "_fig_curves", lambda *a, **kw: b"png")
+    monkeypatch.setattr(
+        ccr,
+        "_native_grid_sweep",
+        lambda *a, **kw: {
+            "results": [],
+            "gram": {},
+            "eta_j_check": 1e-9,
+            "n_range": 1,
+            "n_azimuth": 1,
+        },
+    )
+
+    nc = tmp_path / "ww3.nc"
+    _make_ww3_product(str(nc))
+    expected = len(dict.fromkeys(list(ccr.DEFAULT_BASES) + ccr.NATIVE_EXTRA_BASES))
+    prod = _sweep_product(Path(nc), KMIN, KMAX, list(ccr.DEFAULT_BASES), no_panels=True)
+    assert len(prod["results"]) == expected
+    assert expected > len(ccr.DEFAULT_BASES)  # the extension did happen
+    # an explicit (non-default) WW3 sweep is not extended
+    prod_small = _sweep_product(Path(nc), KMIN, KMAX, [(4, 5)], no_panels=True)
+    assert len(prod_small["results"]) == 1
+
+
+def test_build_html_native_note():
+    # a product carrying a native sweep gets the note + table ; one without
+    # does not
+    results = [
+        dict(_res(32, 30, 0.683), rel_l2_domain=0.0578),
+        dict(_res(40, 35, 0.683), rel_l2_domain=0.0457),
+    ]
+    native = {
+        "results": [
+            {
+                "nk": 32,
+                "nphi": 30,
+                "n_coeffs": 960,
+                "rel_l2": 0.0562,
+                "capture": 0.9968,
+                "idemp_max_abs": 3.2e-3,
+                "idemp_max_rel": 1e-4,
+            },
+            {
+                "nk": 40,
+                "nphi": 35,
+                "n_coeffs": 1400,
+                "rel_l2": 0.0437,
+                "capture": 0.9981,
+                "idemp_max_abs": 4.4e-3,
+                "idemp_max_rel": 1e-4,
+            },
+        ],
+        "gram": {(40, 35): {"max_diag": 1.75e-2, "max_off": 1.75e-2}},
+        "eta_j_check": 4.4e-9,
+        "n_range": 512,
+        "n_azimuth": 256,
+    }
+    html = _build_html([_prod("ww3.nc", results, native=native)], 600.0, 25.0)
+    assert "Native (log-polar) grid check" in html
+    assert "rel. L2 (native grid)" in html  # metrics-section row + table header
+    assert "idempotence max |C &minus; C&#8242;|" in html  # native table header
+    # the cartesian in-domain column is filled for the matching bases
+    assert "5.78%" in html and "4.57%" in html
+    # a product without a native sweep has no native note / table
+    html2 = _build_html([_prod("l1b.nc", results)], 600.0, 25.0)
+    assert "Native (log-polar) grid check" not in html2
+    assert "rel. L2 (native grid)" in html2  # the metrics row is always present
+
+
+def test_fig_curves_native():
+    res = [dict(_res(32, 30, 0.056), rel_l2_domain=0.0578)]
+    native = {
+        "results": [{"nk": 32, "nphi": 30, "n_coeffs": 960, "rel_l2": 0.0562}],
+    }
+    png = _fig_curves(res, native=native)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    # without a native sweep the figure still renders
+    assert _fig_curves(res)[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 def test_entrypoint_ocn_product(tmp_path):
