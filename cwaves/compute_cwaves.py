@@ -10,6 +10,32 @@ Implements the orthonormal kernel decomposition of the reference :
 
 The kernels are orthonormal on the elliptic wavenumber domain A
 (equations B1 to B13 of the paper).
+
+Mathematical basis : the kernel construction is the standard orthonormal
+Gegenbauer theory of
+
+    Gradshteyn, I. S., and Ryzhik, I. M. (2000),
+    "Table of Integrals, Series and Products", 7th ed., Elsevier, New York
+    (section 7.313 : orthonormality of C_n^(3/2) with the (1 - x^2) weight),
+
+applied to the elliptic wavenumber domain A of the 2007 paper. This module
+is the *exact* implementation of that construction :
+
+* the Gegenbauer polynomials C_n^(3/2) are orthonormalized with
+  ``coef(n) = sqrt((n + 3/2) / ((n + 2) (n + 1)))``, which makes
+  ``coef(n)^2 * I_n = 1`` hold **exactly for every n**, where
+  ``I_n = integral_{-1}^{1} (1 - x^2) C_n^(3/2)(x)^2 dx`` is the
+  Gradshteyn-Ryzhik orthonormality integral (``I_0 = 4/3`` and
+  ``I_n = 2 (n + 1) (n + 2) / (2 n + 3)`` for n >= 1);
+* ``eta`` (paper equation B13) is identically the square root of the
+  inverse Jacobian of the (alpha, phi) -> (k_rg, k_az) mapping
+  (``eta^2 * J = 1``), so the 2-D kernel orthonormality over A reduces to
+  the 1-D orthonormalities above and ``integral_A K_i K_j dA = delta_ij``
+  holds **exactly in the continuum**.
+
+See ``repository_specifications.md`` (sections 5 and 7) for the full
+verification (polynomials against scipy, integrals against the analytic
+G&R values, Jacobian identity -- all at machine precision).
 """
 
 import copy
@@ -24,16 +50,31 @@ def _check_one_sided(xs):
     The CWAVE parameters are computed directly on the one-sided (half) range
     domain, as in Schultz-Stellenfleth et al. (2007) (see
     ``repository_specifications.md`` section 6). A full / symmetrized spectrum
-    (with negative range wavenumbers) must not be passed.
+    (with negative range wavenumbers) must not be passed. The one-sided
+    domain is a **requirement, not a convenience** :
+
+    * on a full / zero-centered range grid the *same* kernels are only
+      "2-normalized" : their Gram matrix converges to 2I (norm sqrt(2),
+      not 1), so a signal built from the basis round-trips to 2x itself
+      (100 % error, no convergence under refinement) -- verified in
+      ``repository_specifications.md`` section 6.3;
+    * the angular basis {1, sin 2p(phi), cos 2p(phi)} is pi-periodic :
+      orthonormal on any interval of length pi (the one-sided domain maps
+      phi to [0, pi] exactly), but **incomplete** on the full 2pi circle --
+      it spans only the centrally-symmetric spectra, and a generic
+      full-domain spectrum projects to ~0 (same section).
     """
     krg_min = float(np.min(np.asarray(xs.k_rg)))
     if krg_min < 0:
         raise ValueError(
             "compute_cwave_parameters expects a one-sided (k_rg >= 0) cross-spectrum. "
             f"A full / symmetrized spectrum was detected (k_rg.min() = {krg_min:.3e}). "
-            "Compute the CWAVE parameters directly on the one-sided (half) range domain, "
-            "as in Schultz-Stellenfleth et al. (2007); do not symmetrize first "
-            "(see repository_specifications.md section 6)."
+            "The one-sided (half) range domain is where the kernel basis is orthonormal; "
+            "on a zero-centered grid the Gram matrix converges to 2I (norm sqrt(2), not 1) "
+            "and the pi-periodic angular basis is incomplete for generic (non centrally-"
+            "symmetric) spectra. Compute the CWAVE parameters directly on the one-sided "
+            "range domain, as in Schultz-Stellenfleth et al. (2007); do not symmetrize "
+            "first (see repository_specifications.md sections 6 and 7)."
         )
 
 

@@ -15,12 +15,13 @@ import pytest
 import xarray as xr
 from cwaves.scripts.cwave_certification_report import (
     GRAM_BASIS,
-    IDEMPOTENCE_TOL,
+    SCALING_RATIO_MAX,
     _build_html,
     _fig_basis_panel,
     _fig_curves,
     _fmt_pct,
     _gram_diagnostic,
+    _idempotence_scaling,
     _kernel_domain_mask,
     _l1b_cross_spectrum_compat,
     _load_cross_spectrum,
@@ -235,6 +236,32 @@ def _res_idemp(
     )
 
 
+def _idemp_scale(
+    e1: float, e2: float, *, truncated: bool = False
+) -> dict[str, float | bool | str]:
+    """Build the Part 2 per-product scaling diagnostic, with the same
+    status derivation as :func:`_idempotence_scaling` (pass / expected /
+    fail)."""
+    ratio = e2 / e1 if e1 > 0.0 else 0.0
+    floor = max(0.0, 2.0 * e2 - e1)
+    floor_frac = floor / e1 if e1 > 0.0 else 0.0
+    if ratio <= SCALING_RATIO_MAX:
+        status = "pass"
+    elif truncated:
+        status = "expected"
+    else:
+        status = "fail"
+    return {
+        "e1": e1,
+        "e2": e2,
+        "ratio": ratio,
+        "floor": floor,
+        "floor_frac": floor_frac,
+        "truncated": truncated,
+        "status": status,
+    }
+
+
 # ---------------------------------------------------------------------------
 # _parse_bases / _fmt_pct
 # ---------------------------------------------------------------------------
@@ -328,9 +355,9 @@ def test_sweep_basis_idempotence_metrics():
     assert np.isfinite(res["idemp_max_rel"])
     assert res["idemp_max_abs"] >= 0.0
     assert res["idemp_max_rel"] >= 0.0
-    # the coarse 25 x 25 test grid is far from the continuum limit : the
-    # first-order quadrature error is well above the 1e-7 gate
-    assert res["idemp_max_abs"] > IDEMPOTENCE_TOL
+    # the coarse 25 x 40 test grid is far from the continuum limit : the
+    # first-order quadrature error is well above machine precision
+    assert res["idemp_max_abs"] > 1e-3
 
 
 def test_refinement_demo_converges():
@@ -343,6 +370,10 @@ def test_refinement_demo_converges():
     assert len(rows) == 2
     err1, err2 = (r["idemp_max_abs"] for r in rows)
     assert err2 < 0.75 * err1
+    # the scaling ratio is reported per doubling (None on the coarsest grid)
+    assert rows[0]["ratio"] is None
+    assert rows[1]["ratio"] == pytest.approx(err2 / err1)
+    assert rows[1]["ratio"] <= SCALING_RATIO_MAX
     # the Gram deviations (on the GRAM_BASIS rows) shrink with refinement
     assert rows[0]["gram_diag"] < 0.25
     assert rows[0]["gram_off"] < 0.25
@@ -354,6 +385,67 @@ def test_refinement_demo_converges():
     rows32 = _refinement_demo(KMIN, KMAX, plans=[(1, 128, 64, [(32, 30)])])
     assert "gram_diag" not in rows32[0]
     assert "gram_off" not in rows32[0]
+    assert rows32[0]["ratio"] is None
+
+
+def test_idempotence_scaling_full_domain():
+    # Part 2 : on a grid whose range contains the kernel domain the
+    # idempotence error halves per grid doubling (status "pass", ratio
+    # <= SCALING_RATIO_MAX) and no truncation floor is implied
+    n_fr, n_fs = 128, 64
+    k_rg = xr.DataArray(np.linspace(0.0, KMAX, n_fs), dims="freq_sample")
+    k_az = xr.DataArray(np.linspace(-KMAX, KMAX, n_fr), dims="freq_line")
+    krg, kaz = np.meshgrid(np.asarray(k_rg), np.asarray(k_az), indexing="xy")
+    vals = np.exp(-(((np.hypot(krg, kaz) - 0.10) / 0.04) ** 2))
+    xs = xr.DataArray(
+        vals,
+        dims=("freq_line", "freq_sample"),
+        coords={
+            "k_rg": ("freq_sample", np.asarray(k_rg)),
+            "k_az": ("freq_line", np.asarray(k_az)),
+        },
+        name="xspectra_2tau",
+    )
+    f = _normalized_density(xs, KMIN, KMAX)
+    k_rg = xr.DataArray(np.asarray(f.k_rg, dtype=float), dims="freq_sample")
+    k_az = xr.DataArray(np.asarray(f.k_az, dtype=float), dims="freq_line")
+    domain = _kernel_domain_mask(k_rg, k_az, KMIN, KMAX)
+    scale = _idempotence_scaling(f, k_rg, k_az, KMIN, KMAX, domain)
+    assert scale["ratio"] == pytest.approx(scale["e2"] / scale["e1"])
+    assert scale["ratio"] <= SCALING_RATIO_MAX
+    assert scale["status"] == "pass"
+    assert scale["truncated"] is False
+    assert 0.0 <= scale["floor_frac"] < 0.5
+
+
+def test_idempotence_scaling_truncated():
+    # Part 2 : a grid whose range cuts the kernel domain (k_rg max < kmax)
+    # carries a range-truncation floor : the error plateaus (ratio >
+    # SCALING_RATIO_MAX) and the status is "expected", not "fail"
+    n_fr, n_fs = 128, 64
+    k_rg = xr.DataArray(np.linspace(0.0, 0.5 * KMAX, n_fs), dims="freq_sample")
+    k_az = xr.DataArray(np.linspace(-KMAX, KMAX, n_fr), dims="freq_line")
+    krg, kaz = np.meshgrid(np.asarray(k_rg), np.asarray(k_az), indexing="xy")
+    vals = np.exp(-(((np.hypot(krg, kaz) - 0.10) / 0.04) ** 2))
+    xs = xr.DataArray(
+        vals,
+        dims=("freq_line", "freq_sample"),
+        coords={
+            "k_rg": ("freq_sample", np.asarray(k_rg)),
+            "k_az": ("freq_line", np.asarray(k_az)),
+        },
+        name="xspectra_2tau",
+    )
+    f = _normalized_density(xs, KMIN, KMAX)
+    k_rg = xr.DataArray(np.asarray(f.k_rg, dtype=float), dims="freq_sample")
+    k_az = xr.DataArray(np.asarray(f.k_az, dtype=float), dims="freq_line")
+    domain = _kernel_domain_mask(k_rg, k_az, KMIN, KMAX)
+    scale = _idempotence_scaling(f, k_rg, k_az, KMIN, KMAX, domain)
+    assert scale["truncated"] is True
+    assert scale["status"] in {"expected", "pass"}
+    if scale["status"] == "expected":
+        assert scale["ratio"] > SCALING_RATIO_MAX
+        assert scale["floor"] > 0.0
 
 
 def test_gram_diagnostic_identity_like():
@@ -578,8 +670,9 @@ def test_build_html_no_domain_breakdown():
 
 
 def test_build_html_part2_fail():
-    # Part 2 : a product sweep that fails the idempotence gate renders the
-    # Part 2 section, the FAIL verdict, the per-product table and the tags
+    # Part 2 : a product whose idempotence error does not halve per doubling
+    # on a range-complete grid (status "fail") renders the Part 2 section,
+    # the FAIL verdict and the per-product scaling table
     results = [
         _res_idemp(32, 30, 0.1533, 0.46, 0.05),
         _res_idemp(40, 35, 0.1500, 0.70, 0.075),
@@ -587,8 +680,8 @@ def test_build_html_part2_fail():
     prod = _prod(
         "s1a.nc",
         results,
-        idemp_pass=False,
         idemp_worst=results[1],
+        idemp_scale=_idemp_scale(0.46, 0.458, truncated=False),
         gram_grid=(512, 256),
         gram_diag=3.3e-2,
         gram_off=6.0e-2,
@@ -596,13 +689,17 @@ def test_build_html_part2_fail():
     html = _build_html([prod], 600.0, 25.0)
     assert 'id="part-2"' in html
     assert "Part 2 &mdash; Coefficient idempotence" in html
-    # the gate verdict is a FAIL with the worst (product, basis)
-    assert "FAIL on 1 of 1 products" in html
-    assert "7.000e-01" in html
-    # the per-product table carries the per-basis PASS/FAIL tags
-    assert "gate 1e-07" in html
-    assert html.count("<span class='tag fail'>FAIL</span>") == 2
-    assert "<span class='tag pass'>PASS</span>" not in html
+    # the gate verdict is a FAIL (defect signature on a range-complete grid)
+    assert "<strong>FAIL.</strong>" in html
+    assert "s1a.nc" in html
+    # the per-product scaling diagnostic table carries the FAIL tag, the
+    # ratio and the implied floor
+    assert "Per-product scaling diagnostic" in html
+    assert "4.600e-01" in html
+    assert "4.580e-01" in html
+    assert "0.996" in html  # ratio 0.458 / 0.46
+    assert "4.560e-01" in html  # implied floor 2 * 0.458 - 0.46
+    assert html.count("<span class='tag fail'>FAIL</span>") == 1
     # the Gram diagnostic table is rendered
     assert "Discrete Gram matrix M of the 4 x 5 basis" in html
     assert "3.300e-02" in html
@@ -613,37 +710,106 @@ def test_build_html_part2_fail():
     assert "href='#part-2'" in html
 
 
-def test_build_html_part2_pass():
-    # Part 2 : when every basis clears the gate the verdict is a PASS and the
-    # per-basis tags are green
+def test_build_html_part2_fail_refinement():
+    # Part 2 : a scaling ratio above the gate on the full-domain refinement
+    # grids (plateau instead of halving) fails the global gate
+    results = [_res_idemp(4, 5, 0.30, 3.5e-2, 1.0e-2)]
+    prod = _prod(
+        "s1a.nc",
+        results,
+        idemp_worst=results[0],
+        idemp_scale=_idemp_scale(3.5e-2, 1.7e-2, truncated=False),
+    )
+    refinement = [
+        {
+            "scale": 1,
+            "grid": (256, 128),
+            "nk": 4,
+            "nphi": 5,
+            "idemp_max_abs": 3.521e-2,
+            "idemp_max_rel": 1.022e-2,
+            "ratio": None,
+            "gram_diag": 4.887e-2,
+            "gram_off": 5.626e-2,
+        },
+        {
+            "scale": 2,
+            "grid": (512, 256),
+            "nk": 4,
+            "nphi": 5,
+            "idemp_max_abs": 3.49e-2,
+            "idemp_max_rel": 1.012e-2,
+            "ratio": 0.991,
+            "gram_diag": 4.8e-2,
+            "gram_off": 5.6e-2,
+        },
+    ]
+    html = _build_html([prod], 600.0, 25.0, refinement=refinement)
+    assert "<strong>FAIL.</strong>" in html
+    # the plateau is called out on the refinement gate
+    assert "does not halve per grid doubling" in html
+    assert "0.991" in html
+    # the ratio cell above the gate is tagged fail
+    assert html.count("<span class='tag fail'>0.991</span>") == 1
+
+
+def test_build_html_part2_expected():
+    # Part 2 : a product whose range cuts the kernel domain (status
+    # "expected") is flagged, not failed : the verdict stays a PASS and the
+    # scaling table carries the amber EXPECTED tag with the implied floor
     results = [
-        _res_idemp(4, 5, 0.30, 1e-9, 1e-10),
-        _res_idemp(32, 30, 0.1533, 5e-8, 1e-9),
+        _res_idemp(4, 5, 0.30, 7.3e-1, 7.0e-2),
+        _res_idemp(32, 30, 0.1533, 8.2e-1, 8.0e-2),
+    ]
+    prod = _prod(
+        "xsp.nc",
+        results,
+        idemp_worst=results[1],
+        idemp_scale=_idemp_scale(7.263e-1, 7.117e-1, truncated=True),
+    )
+    html = _build_html([prod], 600.0, 25.0)
+    assert "<strong>PASS.</strong>" in html
+    assert "<span class='tag fail'>FAIL</span>" not in html
+    assert "EXPECTED (range floor)" in html
+    # the implied floor 2*E2 - E1 and the truncation flag are reported
+    assert "6.971e-01" in html  # 2 * 7.117e-1 - 7.263e-1
+    assert "yes" in html
+
+
+def test_build_html_part2_pass():
+    # Part 2 : a range-complete product that halves per doubling passes the
+    # per-product scaling test and the verdict is a PASS
+    results = [
+        _res_idemp(4, 5, 0.30, 2.2e-1, 5.0e-2),
+        _res_idemp(32, 30, 0.1533, 5e-2, 1e-2),
     ]
     prod = _prod(
         "s1a.nc",
         results,
-        idemp_pass=True,
-        idemp_worst=results[1],
+        idemp_worst=results[0],
+        idemp_scale=_idemp_scale(2.164e-1, 1.032e-1, truncated=False),
         gram_grid=(512, 256),
         gram_diag=1e-3,
         gram_off=1e-3,
     )
     html = _build_html([prod], 600.0, 25.0)
-    assert "PASS on 1 of 1 products" in html
-    assert html.count("<span class='tag pass'>PASS</span>") == 2
+    assert "<strong>PASS.</strong>" in html
+    assert "PASS (E &prop; h)" in html
     assert "<span class='tag fail'>FAIL</span>" not in html
+    # the ratio and the (near-zero) floor share are reported
+    assert "0.477" in html
+    assert "Discrete Gram matrix M of the 4 x 5 basis" in html
 
 
 def test_build_html_part2_refinement_table():
-    # Part 2 : the refinement demo rows are rendered (with the Gram columns
-    # on the GRAM_BASIS rows and dashes on the other rows)
+    # Part 2 : the refinement demo rows are rendered (with the scaling ratio
+    # column and the Gram columns on the GRAM_BASIS rows)
     results = [_res_idemp(4, 5, 0.30, 3.5e-2, 1.0e-2)]
     prod = _prod(
         "s1a.nc",
         results,
-        idemp_pass=False,
         idemp_worst=results[0],
+        idemp_scale=_idemp_scale(3.5e-2, 1.7e-2, truncated=False),
         gram_grid=(512, 256),
         gram_diag=3.3e-2,
         gram_off=6.0e-2,
@@ -656,6 +822,7 @@ def test_build_html_part2_refinement_table():
             "nphi": 5,
             "idemp_max_abs": 3.521e-2,
             "idemp_max_rel": 1.022e-2,
+            "ratio": None,
             "gram_diag": 4.887e-2,
             "gram_off": 5.626e-2,
         },
@@ -666,6 +833,7 @@ def test_build_html_part2_refinement_table():
             "nphi": 5,
             "idemp_max_abs": 1.746e-2,
             "idemp_max_rel": 5.069e-3,
+            "ratio": 0.4959,
             "gram_diag": 2.297e-2,
             "gram_off": 2.076e-2,
         },
@@ -676,6 +844,10 @@ def test_build_html_part2_refinement_table():
     assert "1.746e-02" in html
     assert "4.887e-02" in html
     assert "2.297e-02" in html
+    # the ratio column is rendered (dash on the coarsest grid, value below
+    # the gate tagged pass)
+    assert "ratio per doubling" in html
+    assert html.count("<span class='tag pass'>0.496</span>") == 1
     # the 4x5 basis row count (the GRAM_BASIS rows carry the Gram cells)
     assert html.count("512 x 256 (2x)") >= 1
 
@@ -774,14 +946,17 @@ def test_entrypoint_end_to_end(tmp_path):
     # the gallery rows carry the fourth-column metrics
     assert html.count("<div class='panel-metrics'>") == 2
     assert "highest pixel-to-pixel difference" in html
-    # Part 2 is rendered : the 1e-7 gate, the verdict card and the
-    # per-product idempotence table (the coarse synthetic grid fails it)
+    # Part 2 is rendered : the error-proportionality gate, the verdict card,
+    # the per-product scaling diagnostic and the full-domain refinement gate
     assert 'id="part-2"' in html
     assert "Coefficient idempotence" in html
-    assert "gate 1e-07" in html
-    assert "FAIL on 1 of 1 products" in html
+    assert "error proportionality" in html
+    assert "Per-product scaling diagnostic" in html
     assert "Grid-refinement evidence" in html
     assert "Discrete Gram matrix M" in html
+    # the per-product scaling diagnostic carries one row per product with a
+    # status tag (pass / expected / fail)
+    assert "ratio E(2x)/E(1x)" in html
 
 
 def test_entrypoint_no_panels(tmp_path):
@@ -1043,13 +1218,21 @@ def test_sweep_product_kernel_domain(tmp_path):
         assert "rel_l2_domain" in res
         assert 0.0 <= float(res["rel_l2_domain"]) < float(res["rel_l2"])
     # Part 2 : every sweep result carries the idempotence metrics and the
-    # product dict carries the aggregation + the Gram diagnostic
+    # product dict carries the aggregation, the scaling diagnostic and the
+    # Gram diagnostic
     for res in prod["results"]:
         assert "idemp_max_abs" in res
         assert "idemp_max_rel" in res
         assert res["idemp_max_abs"] >= 0.0
-    assert isinstance(prod["idemp_pass"], bool)
     assert prod["idemp_worst"] in prod["results"]
+    scale = prod["idemp_scale"]
+    assert scale["ratio"] == pytest.approx(scale["e2"] / scale["e1"])
+    assert scale["e1"] >= 0.0
+    assert scale["e2"] >= 0.0
+    assert scale["floor"] >= 0.0
+    assert scale["floor_frac"] >= 0.0
+    assert scale["status"] in {"pass", "expected", "fail"}
+    assert isinstance(scale["truncated"], bool)
     # the Gram grid is 2x the (masked / dropna'd) density grid of the sweep
     with xr.open_dataset(nc) as ds:
         xs = _load_cross_spectrum(ds, lag=2, kmax=KMAX)

@@ -18,6 +18,18 @@ data. The method is described in the reference paper :
    `doi:10.1029/2006JC003970
    <https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2006JC003970>`_
 
+The kernel construction itself follows the standard orthonormal Gegenbauer
+theory :
+
+.. epigraph::
+
+   I. S. Gradshteyn and I. M. Ryzhik, "Table of Integrals, Series and
+   Products", **7th ed., Elsevier, New York, 2000** (section 7.313 :
+   orthonormality of :math:`C_n^{(3/2)}` with the :math:`(1-x^2)` weight).
+
+Gradshteyn & Ryzhik is the **primary mathematical reference**; the 2007 paper
+above is the application of that construction to the SAR cross-spectrum.
+
 Instead of first retrieving the full 2D ocean wave spectrum, the CWAVE method
 projects the SAR **cross-spectrum** directly onto a set of **orthonormal
 kernels**. Each kernel is a tensor product of

@@ -213,7 +213,18 @@ following reasons :
    (equations 24, 25). Symmetrizing turns the integration domain into the full 2D
    plane, on which the kernels `h_i` are **not** orthonormal (their norm is doubled,
    since they are antipodally even). The resulting coefficients are therefore **not**
-   the paper's `S_i`.
+   the paper's `S_i`. This is not just a theoretical objection — it was verified
+   numerically on 2026-11-09 (published investigation note, linked below in
+   section 7): on a zero-centered `k_rg` grid the Gram matrix of the *same* kernel
+   basis converges to **2I** (diagonal → 2, off-diagonal → 0, to quadrature
+   accuracy), an in-span signal round-trips to **2× itself** (100 % relative
+   error, no convergence under refinement), and an asymmetric spectrum (a
+   Gaussian not centered on the origin) is **lost ≈ 100 %** with no improvement
+   under refinement. The second effect — incompleteness — is the one that
+   actually destroys the information: the angular basis {1, sin 2p(φ), cos
+   2p(φ)} is π-periodic, orthonormal on any interval of length π (the
+   one-sided domain gives φ ∈ [0, π] exactly) but spans, on the full 2π
+   circle, **only the centrally-symmetric subspace** of spectra.
 
 2. **Distorted first (DC) range-bin weighting.** A one-sided FFT spectrum carries a
    single DC bin (`k_rg = 0`) and the standard one-sided weighting. Symmetrization
@@ -296,3 +307,103 @@ contiguous sub-block of the grid, which preserves uniformity. A non-uniform inpu
 (e.g. the OCN product's own `oswKx`/`oswKy`, rel. std of spacing ≈ 1) **must not** be
 fed directly to `compute_cwave_parameters` ; it must first be resampled onto a
 uniform grid (as `polar_to_cartesian` does for the polar `oswPolSpec`).
+
+## 7. Continuum orthonormality (verified 2026-11-09)
+
+On 2026-11-09 the orthonormality of the implemented kernel basis was verified
+end to end (no library change was made during the investigation). The full
+evidence, the method of every check (X1-X9) and the reproducible scripts are in
+the published investigation note :
+
+<https://cerweb.ifremer.fr/datarmor/dev_reports/html/libs/agrouaze/cwave/orthonormality_investigation.html>
+
+### 7.1 The kernel as a product of orthonormal 1-D factors
+
+The kernel is `K_{n,p} = G_n(alpha_k) * F_p(phi) * eta` with
+
+```
+tmp    = a1 * k_az^4 + a2 * k_az^2 + k_rg^2,   a1 = (gamma^2 - gamma^4)/(gamma^2 kmin^2 - kmax^2), a2 = (kmax^2 - gamma^4 kmin^2)/(kmax^2 - gamma^2 kmin^2)   (gamma = 2)
+alpha_k = 2 log10(sqrt(tmp)) / log10(kmax/kmin) - 1   in [-1, 1]
+phi    = arctan2(k_rg, k_az)   in [0, pi]   (one-sided range domain, section 6)
+G_n    = coef(n) * C_n^(3/2)(alpha_k) * sqrt(1 - alpha_k^2),   coef(n) = sqrt((n + 3/2)/((n + 2)(n + 1)))   (paper equation B9)
+F      = { 1/sqrt(pi),  sqrt(2/pi) sin 2p phi,  sqrt(2/pi) cos 2p phi }
+eta^2  = 2 S / ((k_rg^2 + k_az^2) * tmp * ln(kmax/kmin)),   S = 2 a1 k_az^4 + a2 k_az^2 + k_rg^2   (paper equation B13)
+domain A = { (k_rg, k_az) : kmin^2 <= tmp <= kmax^2, k_rg >= 0 },   kmin = 2*pi/600, kmax = 2*pi/25
+```
+
+### 7.2 Radial factor : the Gradshteyn-Ryzhik orthonormality (exact)
+
+With the orthonormality integral of Gradshteyn & Ryzhik (7th ed., 2000, section
+7.313),
+
+```
+I_n = integral_{-1}^{1} (1 - x^2) C_n^(3/2)(x)^2 dx  =  4/3 (n = 0),  2 (n + 1)(n + 2)/(2 n + 3) (n >= 1)
+```
+
+the code's coefficient satisfies `coef(n)^2 * I_n = 1` **exactly for every n**.
+Verified : the polynomials of the code's recurrence match
+`scipy.special.gegenbauer` to 9.2e-14 (X1), the integrals match the analytic
+values to machine precision (X2, 64-node Gauss-Legendre, exact for the
+degree-2n polynomial integrands), and the radial block
+`R_nm = integral G_n G_m W(alpha) dalpha` with `W = mean_phi(eta^2 J) ~ 1`
+deviates from the identity by <= 2e-4 (12x12, X6).
+
+### 7.3 Angular factor : pi-periodic harmonics
+
+`F` is orthonormal on **any interval of length pi** ; the one-sided range
+domain gives `phi in [0, pi]` exactly, which is where the design lives. On a
+zero-centered grid (`phi in [-pi, pi]`) the set remains orthogonal but its norm
+is doubled (Gram -> 2I) and it is complete only for the centrally-symmetric
+spectra — the verified facts of section 6.3.
+
+### 7.4 The Jacobian identity eta^2 * J = 1 (exact)
+
+The Jacobian `J = |d(k_rg, k_az) / d(alpha_k, phi)|` of the (alpha, phi) ->
+(k_rg, k_az) mapping is analytic :
+
+```
+J = (k_rg^2 + k_az^2) * tmp * ln(kmax/kmin) / (2 S),   S = 2 a1 k_az^4 + a2 k_az^2 + k_rg^2
+```
+
+and therefore `eta^2 * J = 1` **identically** (verified without finite
+differences on a 1201 x 2401 (alpha, phi) grid : max |eta^2 J - 1| =
+8.9e-16, X9a ; independently confirmed by central finite differences at +/-1.2 %
+accuracy, X5). `eta` (paper equation B13) is exactly the square root of the
+inverse Jacobian : the 2-D measure on A becomes the plain d(alpha_k) d(phi).
+
+### 7.5 Consequence : continuum orthonormality is an exact identity
+
+With the change of variables (k_rg, k_az) -> (alpha_k, phi) the kernel
+orthonormality factorizes over the orthonormalities of 7.2 and 7.3 :
+
+```
+integral_A K_i K_j dA  =  integral_B G_i G_j F_p F_q eta^2 J d(alpha_k) d(phi)  =  delta_ij
+```
+
+**exactly in the continuum** (`B = [-1, 1] x [0, pi]`). No implementation
+defect can move this statement ; every discrete deviation measured so far is
+pure quadrature :
+
+- **uniform k-grid** : first-order quadrature, dominated by the elliptic domain
+  boundary cutting through the cells — the idempotence error halves per grid
+  doubling (in-span round trip 84 % -> 11 %, X8 ; refinement 3.5e-2 -> 1.7e-2
+  -> 8.6e-3, X3/X9b), and the Gram matrix converges to I (1.5e-1 -> 2.4e-2
+  diagonal deviation, X3).
+- **(alpha, phi)-mapped grid** (the decomposition's native coordinates) : no
+  domain boundary is cut through cells, the error shrinks ~4x per doubling
+  (1.1e-2 -> 2.8e-3, X9b). The mapped integral of J reproduces the k-grid mask
+  area to 0.2 % (0.053758 vs 0.053867, X9c).
+- **product grids that cut the kernel domain** (k_rg max < kmax, i.e. the SAR
+  XSP products) : the discrete Gram converges to a matrix that is not the
+  identity (range-truncation floor) and the idempotence error plateaus instead
+  of halving — a property of the product range, not of the implementation (see
+  the "Part 2" section of the certification report).
+
+Corollary : the former absolute `1e-7` coefficient-idempotence gate of the
+certification report was **removed** — it is a continuum-limit property,
+unreachable on any finite product grid (~10^6x too coarse for a first-order
+quadrature). The report now gates the **proportionality of the reconstruction
+error to the theoretical quadrature error** : the idempotence error must halve
+(or better) per grid doubling on full-domain grids (ratio <= 0.75 per
+doubling), which is the discrete signature of a consistent first-order
+quadrature of the exact continuum basis verified in this section.
