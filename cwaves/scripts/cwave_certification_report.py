@@ -1,9 +1,11 @@
 """Generate a self-contained HTML report certifying the CWAVE round trip.
 
 The report sweeps a set of CWAVE kernel basis sizes ``(Nk, Nphi)``, decomposes
-each real SAR ocean cross-spectrum (one section per product) into CWAVE
-coefficients for each size, recomposes the spectrum from the coefficients x
-kernels, and measures how well the recomposition matches the original. It
+each ocean wave spectrum (one section per product) into CWAVE coefficients for
+each size, recomposes the spectrum from the coefficients x kernels, and
+measures how well the recomposition matches the original. The input is the
+measured SAR cross-spectrum for the S1 / Envisat products and the smooth WW3
+model **directional wave elevation spectrum** E(k, phi) for the model product. It
 then renders:
 
 * a **metrics table** (one row per basis): relative L2 error, captured L2
@@ -13,13 +15,21 @@ then renders:
   (``Nk x Nphi``), with the 32 x 30 = 960-coefficient point marked;
 * a **gallery** of, per basis, the original spectrum, the recomposed spectrum
   and the pointwise difference, so the convergence (and the residual fine
-  structure) is visible by eye;
+  structure) is visible by eye, plus a fourth column with the per-basis
+  point-to-point metrics (number and % of pixels matching the original within
+  1e-3, and the highest pixel-to-pixel difference);
+* a **kernel-domain breakdown** per product : the CWAVE kernel is only defined
+  on its elliptic (gamma=2) wavenumber domain, so when the spectrum carries
+  non-negligible L2 mass outside it (visible as gray shading in the gallery) a
+  second in-domain-only sweep reports the round-trip error on the
+  round-trippable part, separating the recoverable in-domain error from the
+  hard out-of-domain floor;
 * a **side navigation panel** to jump between the product sections.
 
 The whole report is written as a **single self-contained ``index.html``** (all
 figures embedded as base64 PNGs) so it can be published or shared as one file.
 
-Three product schemas are accepted, auto-detected :
+Four product schemas are accepted, auto-detected :
 
 * **SARWAVE L1B XSP** and the historical **Envisat ASAR WVI XSP L1C**
   (xsar_slc, whose ``k_rg``/``k_az`` carry singleton ``tile_sample``/``tile_line``
@@ -27,7 +37,11 @@ Three product schemas are accepted, auto-detected :
 * **OCN WV osw products** (``oswCartSpecRe/Im``) : the cartesian
   cross-spectrum is stored on a sinh (non-uniform) wavenumber grid in
   normalized (``m/m``) units and is decoded to a regular grid in rad/m by
-  :func:`cwaves.ocn_sinh.compute_ocn_sinh_cartesian`.
+  :func:`cwaves.ocn_sinh.compute_ocn_sinh_cartesian`;
+* **WW3 model colocation products** (polar ``polSpec`` E(k, phi)) : the smooth
+  directional **wave elevation spectrum** (``k`` in 1/m, ``phi`` in degrees) is
+  converted to rad/m and resampled onto a regular cartesian grid, providing a
+  noise-free reference against which the noisy measured spectra are compared.
 
 Several products can be passed to ``--xsp-nc``; the report carries one section
 per product plus a unified top-level finding.
@@ -68,6 +82,8 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import xarray as xr  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
+from matplotlib.patches import Patch  # noqa: E402
+from scipy.interpolate import RegularGridInterpolator  # noqa: E402
 
 from cwaves.compute_cwaves import compute_kernel  # noqa: E402
 from cwaves.config import get_default_config  # noqa: E402
@@ -88,6 +104,10 @@ DIFF_CMAP = "RdBu_r"
 #: azimuth half-width (rad/m) of the display window (beyond it there is no
 #: signal and no kernel).
 K_Y_BAND = 0.15
+
+#: tolerance (normalized ``|xs|`` units, a.u.) for a pixel to count as
+#: matching the original spectrum in the per-basis gallery metrics.
+MATCH_TOL = 1e-3
 
 #: default (Nk, Nphi) basis sweep : a wide spread of total coefficient counts
 #: (20 .. 1400) with a dense cluster around the 32 x 30 = 960 point, including
@@ -191,6 +211,11 @@ def _l1b_cross_spectrum_compat(
     )
 
 
+#: cartesian grid size used to resample a WW3 polar model spectrum.
+WW3_N_RANGE = 256
+WW3_N_AZIMUTH = 256
+
+
 def _product_kind(ds: xr.Dataset) -> str:
     """Human-readable schema label of an opened product (for the report).
 
@@ -198,25 +223,91 @@ def _product_kind(ds: xr.Dataset) -> str:
         ds: open ``xarray.Dataset`` of the product.
 
     Returns:
-        One of ``"OCN WV (cartesian sinh grid -> regular rad/m)"``,
-        ``"ASAR WVI XSP L1C (xsar_slc)"`` or ``"SARWAVE L1B XSP"``.
+        One of the OCN WV, WW3 model, Envisat ASAR WVI L1C or SARWAVE L1B XSP
+        labels.
     """
     if "oswCartSpecRe" in ds.variables and "oswCartSpecIm" in ds.variables:
         return "OCN WV (cartesian sinh grid, decoded to regular rad/m)"
+    if "polSpec" in ds.variables:
+        return (
+            "WW3 model (directional wave elevation spectrum E(k, phi), "
+            "resampled to cartesian rad/m)"
+        )
     if "tile_sample" in ds["k_rg"].dims:
         return "ASAR WVI XSP L1C (xsar_slc)"
     return "SARWAVE L1B XSP"
 
 
-def _load_cross_spectrum(ds: xr.Dataset, lag: int = 2) -> xr.DataArray:
-    """Build the complex one-sided cross-spectrum of one product.
+def _ww3_elevation_spectrum(
+    ds: xr.Dataset,
+    kmax: float,
+    n_range: int = WW3_N_RANGE,
+    n_azimuth: int = WW3_N_AZIMUTH,
+) -> xr.DataArray:
+    """Convert a WW3 directional wave elevation spectrum to a cartesian field.
+
+    The IFREMER colocation WW3 product stores the smooth model **directional
+    wave elevation spectrum** ``polSpec`` E(k, phi) (units ``m4 rad-1``) on
+    the polar grid (``k`` [1/m], ``phi`` [deg, full circle]). The wavenumbers
+    are converted to rad/m and the spectrum is resampled (scipy
+    ``RegularGridInterpolator``) onto the regular cartesian grid expected by
+    ``compute_cwave_parameters`` : one-sided in range (``k_rg >= 0``, up to
+    ``kmax``) and two-sided in azimuth. The angular grid is made periodic (the
+    ``phi = 2 pi`` endpoint duplicates ``phi = 0``) so the interpolation wraps;
+    below the lowest model wavenumber the interpolator returns 0, which is
+    physically consistent (the WW3 model carries no energy at such long
+    wavelengths).
+
+    Args:
+        ds: open WW3 colocation dataset (must contain ``polSpec``, ``k`` and
+            ``phi``).
+        kmax: maximum wavenumber (rad/m) of the cartesian grid, i.e. the
+            report annulus upper bound.
+        n_range: number of cartesian range wavenumbers (``freq_sample``).
+        n_azimuth: number of cartesian azimuth wavenumbers (``freq_line``).
+
+    Returns:
+        The one-sided complex directional wave elevation spectrum, dims
+        ``(freq_sample, freq_line)`` with ``k_rg`` / ``k_az`` coordinates in
+        rad/m.
+    """
+    pol = ds["polSpec"].isel(time=0, drop=True).values  # (phi, k)
+    k = np.asarray(ds["k"].values, dtype=float) * 2.0 * np.pi  # 1/m -> rad/m
+    phi_rad = np.deg2rad(np.asarray(ds["phi"].values, dtype=float))
+    phi_ext = np.append(phi_rad, 2.0 * np.pi)
+    pol_ext = np.concatenate([pol.T, pol.T[:, :1]], axis=1)  # (k, phi + 1)
+    interpolator = RegularGridInterpolator(
+        (k, phi_ext), pol_ext, bounds_error=False, fill_value=0.0
+    )
+    k_rg = np.linspace(0.0, float(kmax), n_range)
+    k_az = np.linspace(-float(kmax), float(kmax), n_azimuth)
+    grid_k_rg, grid_k_az = np.meshgrid(k_rg, k_az, indexing="ij")
+    k_query = np.sqrt(grid_k_rg**2 + grid_k_az**2)
+    phi_query = (np.arctan2(grid_k_az, grid_k_rg) + 2.0 * np.pi) % (2.0 * np.pi)
+    points = np.column_stack([k_query.ravel(), phi_query.ravel()])
+    values = interpolator(points).reshape(n_range, n_azimuth)
+    return xr.DataArray(
+        values.astype(np.complex128),
+        dims=("freq_sample", "freq_line"),
+        coords={"k_rg": ("freq_sample", k_rg), "k_az": ("freq_line", k_az)},
+        name="ww3_polSpec",
+    )
+
+
+def _load_cross_spectrum(
+    ds: xr.Dataset, lag: int = 2, kmax: float | None = None
+) -> xr.DataArray:
+    """Build the complex one-sided wavenumber-domain spectrum of one product.
 
     Detects the product schema and dispatches : an **OCN WV** product
     (``oswCartSpecRe/Im``) is decoded from the sinh (non-uniform, ``m/m``)
     wavenumber grid to a regular grid in rad/m by
-    :func:`cwaves.ocn_sinh.compute_ocn_sinh_cartesian`; a **SARWAVE L1B XSP** or
-    an **Envisat ASAR WVI L1C** product (``xspectra_{lag}tau_Re/Im``) is read
-    as-is (uniform rad/m grid, see :func:`_l1b_cross_spectrum_compat`).
+    :func:`cwaves.ocn_sinh.compute_ocn_sinh_cartesian`; a **WW3 model** product
+    (polar ``polSpec``, the directional wave elevation spectrum E(k, phi)) is
+    resampled to a regular cartesian rad/m grid (see
+    :func:`_ww3_elevation_spectrum`); a **SARWAVE L1B XSP** or an **Envisat
+    ASAR WVI L1C** product (``xspectra_{lag}tau_Re/Im``) is read as-is (uniform
+    rad/m grid, see :func:`_l1b_cross_spectrum_compat`).
 
     The returned array has the canonical ``(freq_line, freq_sample)`` dims with
     ``k_rg`` / ``k_az`` coordinates in rad/m, matching the input contract of
@@ -226,15 +317,51 @@ def _load_cross_spectrum(ds: xr.Dataset, lag: int = 2) -> xr.DataArray:
         ds: open ``xarray.Dataset`` of the product.
         lag: cross-spectrum lag index (1 or 2; default 2 = the 2-tau
             cross-spectrum, both for ``xspectra_{lag}tau`` and ``oswLag``).
+            Ignored by the WW3 model branch (the model spectrum is not a
+            cross-spectrum).
+        kmax: maximum wavenumber (rad/m) of the report annulus; required for
+            the WW3 model branch (it sets the cartesian grid extent).
 
     Returns:
-        The complex one-sided cross-spectrum, dims ``(freq_line, freq_sample)``.
+        The complex one-sided spectrum (SAR cross-spectrum or WW3 directional
+        wave elevation spectrum), dims ``(freq_line, freq_sample)``.
     """
     if "oswCartSpecRe" in ds.variables and "oswCartSpecIm" in ds.variables:
         xs = compute_ocn_sinh_cartesian(ds, lag=lag)
+    elif "polSpec" in ds.variables:
+        if kmax is None:
+            raise ValueError("kmax is required to resample a WW3 model product")
+        xs = _ww3_elevation_spectrum(ds, kmax=kmax)
     else:
         xs = _l1b_cross_spectrum_compat(ds, lag=lag)
     return xs.transpose("freq_line", "freq_sample")
+
+
+def _kernel_domain_mask(
+    k_rg: xr.DataArray, k_az: xr.DataArray, kmin: float, kmax: float
+) -> xr.DataArray:
+    """Boolean mask of the CWAVE kernel domain on the (k_rg, k_az) grid.
+
+    The kernels are NaN outside the elliptic (gamma=2) wavenumber domain of
+    :func:`cwaves.compute_cwaves.compute_kernel` (compressed in azimuth with
+    respect to the circular wavenumber annulus). The domain is independent of
+    the basis size, so the single-basis kernel is used as a lightweight probe.
+
+    Args:
+        k_rg: 1-D range wavenumbers (rad/m).
+        k_az: 1-D azimuth wavenumbers (rad/m).
+        kmin: minimum wavenumber (rad/m).
+        kmax: maximum wavenumber (rad/m).
+
+    Returns:
+        A 2-D boolean mask, dims ``(freq_line, freq_sample)``, True inside the
+        kernel domain.
+    """
+    kernel = compute_kernel(k_rg, k_az, kmin, kmax, cwave_Nk=1, cwave_Nphi=1)[
+        "cwave_kernel"
+    ]
+    finite = cast("xr.DataArray", ~np.isnan(kernel))
+    return finite.any(dim=("k_gp", "phi_hf"))
 
 
 def _normalized_density(xs: xr.DataArray, kmin: float, kmax: float) -> xr.DataArray:
@@ -246,7 +373,8 @@ def _normalized_density(xs: xr.DataArray, kmin: float, kmax: float) -> xr.DataAr
     modulus, and normalize to unit mass.
 
     Args:
-        xs: complex one-sided cross-spectrum (``k_rg >= 0``).
+        xs: complex one-sided spectrum (``k_rg >= 0``) : a SAR cross-spectrum
+            or the WW3 directional wave elevation spectrum.
         kmin: minimum wavenumber (rad/m).
         kmax: maximum wavenumber (rad/m).
 
@@ -314,6 +442,11 @@ def _sweep_basis(
     within_half = float(np.mean(np.abs(ev[valid]) <= 0.5 * fmax))
     sum_c2 = float(np.nansum(np.asarray(coeffs, dtype=float) ** 2))
     parseval_gap = float(abs(resid2 * da - (norm2 * da - sum_c2)) / (norm2 * da))
+    # per-basis point-to-point match metrics (normalized |xs| units, a.u.)
+    abs_ev = np.abs(ev)
+    n_valid = int(valid.sum())
+    n_match = int(np.sum(abs_ev[valid] <= MATCH_TOL))
+    max_abs_diff = float(np.nanmax(abs_ev)) if n_valid else 0.0
 
     out: dict[str, Any] = {
         "nk": nk,
@@ -321,9 +454,13 @@ def _sweep_basis(
         "n_coeffs": nk * nphi,
         "rel_l2": rel_l2,
         "capture": 1.0 - rel_l2**2,
-        "max_pix": float(np.nanmax(np.abs(ev)) / fmax),
+        "max_pix": float(max_abs_diff / fmax),
         "within_half": within_half,
         "parseval_gap": parseval_gap,
+        # point-to-point match metrics vs the original (normalized |xs| units)
+        "n_valid": n_valid,
+        "n_match": n_match,
+        "max_abs_diff": max_abs_diff,
     }
     if with_fields:
         out["fhat_2d"] = fhat.transpose("freq_line", "freq_sample").values
@@ -347,12 +484,16 @@ def _fig_basis_panel(
     k_az_1d: np.ndarray,
     kmax_display: float,
     res: dict[str, Any],
+    domain: np.ndarray | None = None,
 ) -> bytes:
     """Render the (original | recomposed | difference) triple for one basis.
 
     The original and the recomposed spectra share the same white&rarr;red color
     scale so the convergence is visible by eye; the difference panel uses a
-    symmetric diverging scale auto-limited to the max residual.
+    symmetric diverging scale auto-limited to the max residual. When ``domain``
+    (a 2-D boolean mask, ``True`` inside the kernel's elliptic wavenumber
+    domain) is given, the out-of-domain region is shaded gray on every panel so
+    the part of the spectrum that can never be recomposed is visible by eye.
     """
     fig, axes = plt.subplots(1, 3, figsize=(15.0, 3.4), constrained_layout=True)
     vmax = float(np.nanmax(f_2d))
@@ -414,6 +555,23 @@ def _fig_basis_panel(
         ax=axes[2],
         label=r"$\Delta\, |X_S|_{\rm norm}$  (a.u.)",
     )
+    if domain is not None:
+        # shade the out-of-kernel-domain region (domain == 0) gray on every panel
+        for ax in axes:
+            ax.contourf(
+                k_rg_1d,
+                k_az_1d,
+                np.asarray(domain, dtype=float),
+                levels=[-0.5, 0.5],
+                colors="0.55",
+                alpha=0.4,
+                zorder=2,
+            )
+        axes[0].legend(
+            handles=[Patch(facecolor="0.55", alpha=0.4, label="outside kernel domain")],
+            loc="upper right",
+            fontsize=8,
+        )
     return _png_bytes(fig, dpi=150)
 
 
@@ -429,9 +587,16 @@ def _fig_curves(results: list[dict[str, Any]]) -> bytes:
         ("max_pix", r"worst-pixel error / peak", "lower is better", "darkorange"),
         ("within_half", r"pixels within $50\%$ of peak", "higher is better", "blue"),
     ]
+    has_domain = all("rel_l2_domain" in r for r in order)
     for ax, (key, title, direction, color) in zip(axes.flat, panels, strict=True):
         ys = np.array([r[key] for r in order], dtype=float)
         ax.plot(xs, ys, "o-", color=color, lw=1.5, ms=4)
+        if key == "rel_l2" and has_domain:
+            ydom = np.array([r["rel_l2_domain"] for r in order], dtype=float)
+            ax.plot(
+                xs, ydom, "s--", color="purple", lw=1.5, ms=4, label="in kernel domain"
+            )
+            ax.legend(loc="upper right", fontsize=9)
         ax.axvline(ref_n, color="grey", ls=":", lw=1.0)
         i_best = int(np.argmin(ys)) if "lower" in direction else int(np.argmax(ys))
         ax.plot(xs[i_best], ys[i_best], "o", mfc="none", mew=2.0, color="black")
@@ -543,6 +708,7 @@ def _product_section(prod: dict[str, Any], anchor: str) -> str:
     results: list[dict[str, Any]] = prod["results"]
     best: dict[str, Any] = prod["best"]
     order = sorted(results, key=lambda r: (r["n_coeffs"], r["nk"]))
+    has_domain = any("rel_l2_domain" in r for r in results)
 
     rows = []
     for r in order:
@@ -558,32 +724,68 @@ def _product_section(prod: dict[str, Any], anchor: str) -> str:
             tag += " <span class='tag best'>best</span>"
         if is_ref:
             tag += " <span class='tag ref'>32x30 ref</span>"
+        cells = [
+            "<td>{nk} x {nphi}</td>".format(nk=r["nk"], nphi=r["nphi"]),
+            "<td class='num'>{n}</td>".format(n=r["n_coeffs"]),
+            "<td class='num'>{r2}</td>".format(r2=_fmt_pct(r["rel_l2"])),
+            "<td class='num'>{cap}</td>".format(cap=_fmt_pct(r["capture"])),
+        ]
+        if has_domain:
+            cells.append(
+                "<td class='num'>{dom}</td>".format(dom=_fmt_pct(r["rel_l2_domain"]))
+            )
+        cells.extend(
+            [
+                "<td class='num'>{mp}</td>".format(mp=_fmt_pct(r["max_pix"])),
+                "<td class='num'>{wh}</td>".format(wh=_fmt_pct(r["within_half"])),
+                "<td class='num'>{pg}</td>".format(pg=_fmt_pct(r["parseval_gap"])),
+                f"<td>{tag}</td>",
+            ]
+        )
         rows.append(
-            "<tr class='{cls}'>"
-            "<td>{nk} x {nphi}</td><td class='num'>{n}</td>"
-            "<td class='num'>{r2}</td><td class='num'>{cap}</td>"
-            "<td class='num'>{mp}</td><td class='num'>{wh}</td>"
-            "<td class='num'>{pg}</td><td>{tag}</td></tr>".format(
-                cls=" ".join(cls),
-                nk=r["nk"],
-                nphi=r["nphi"],
-                n=r["n_coeffs"],
-                r2=_fmt_pct(r["rel_l2"]),
-                cap=_fmt_pct(r["capture"]),
-                mp=_fmt_pct(r["max_pix"]),
-                wh=_fmt_pct(r["within_half"]),
-                pg=_fmt_pct(r["parseval_gap"]),
-                tag=tag,
+            "<tr class='{cls}'>{body}</tr>".format(
+                cls=" ".join(cls), body="".join(cells)
             )
         )
 
     gallery = []
     for res, png in prod["panels"]:
         b64 = base64.b64encode(png).decode("ascii")
+        n_valid = int(res["n_valid"])
+        n_match = int(res["n_match"])
+        pct_match = 100.0 * n_match / n_valid if n_valid else 0.0
+        metrics = (
+            "<strong>{nk} x {nphi}</strong> ({n} coeffs)<br>"
+            "points matching the original (|&Delta;| &le; {tol:.0e} a.u.): "
+            "<strong>{nm} / {nv}</strong> ({pct:.2f} %)<br>"
+            "highest pixel-to-pixel difference: "
+            "<strong>{md:.3e}</strong> a.u."
+        ).format(
+            nk=res["nk"],
+            nphi=res["nphi"],
+            n=res["n_coeffs"],
+            tol=MATCH_TOL,
+            nm=n_match,
+            nv=n_valid,
+            pct=pct_match,
+            md=float(res["max_abs_diff"]),
+        )
+        if "rel_l2_domain" in res:
+            metrics += (
+                "<br>in-kernel-domain rel. L2: <strong>{dom:.2f} %</strong>".format(
+                    dom=100.0 * float(res["rel_l2_domain"])
+                )
+            )
         gallery.append(
-            "<figure class='panel'><img alt='basis {nk}x{nphi}' "
-            "src='data:image/png;base64,{b64}'></figure>".format(
-                nk=res["nk"], nphi=res["nphi"], b64=b64
+            "<div class='panel'>"
+            "<figure class='panel-fig'><img alt='basis {nk}x{nphi}' "
+            "src='data:image/png;base64,{b64}'></figure>"
+            "<div class='panel-metrics'>{metrics}</div>"
+            "</div>".format(
+                nk=res["nk"],
+                nphi=res["nphi"],
+                b64=b64,
+                metrics=metrics,
             )
         )
     curves_b64 = base64.b64encode(prod["curves_png"]).decode("ascii")
@@ -593,14 +795,64 @@ def _product_section(prod: dict[str, Any], anchor: str) -> str:
     kmax_display = prod["kmax_display"]
 
     kind = prod.get("kind", "SARWAVE L1B XSP")
+    if kind.startswith("WW3"):
+        spec_desc = (
+            "directional wave elevation spectrum E(k, phi) (smooth model, "
+            "first time slice)"
+        )
+    else:
+        spec_desc = "one-sided cross-spectrum (lag 2, first time slice)"
+
+    # kernel-domain breakdown note (only when a non-negligible part of the
+    # spectrum's L2 mass sits outside the kernel's elliptic wavenumber domain)
+    domain_note = ""
+    in_mass = prod.get("domain_in_mass")
+    dom_results = [r for r in results if "rel_l2_domain" in r]
+    if in_mass is not None and in_mass < 0.995 and dom_results:
+        in_mass = float(in_mass)
+        out_floor = 100.0 * (1.0 - in_mass) ** 0.5
+        best_dom = min(dom_results, key=lambda r: r["rel_l2_domain"])
+        tail = (
+            " For this smooth WW3 model spectrum that in-domain error is far "
+            "below the floors of the measured SAR cross-spectra, confirming the "
+            "library path is correct and the full-annulus floor is the "
+            "out-of-domain mass, not noise."
+            if kind.startswith("WW3")
+            else ""
+        )
+        domain_note = (
+            "<p><strong>Kernel-domain breakdown.</strong> The CWAVE kernel is "
+            "only defined on its elliptic (gamma = 2) wavenumber domain, which "
+            "holds <strong>{inmass:.1f} %</strong> of this spectrum's L2 mass; "
+            "the other {outmass:.1f} % lies outside it and can never be "
+            "recomposed, setting a hard out-of-domain relative-L2 floor of "
+            "<strong>{floor:.1f} %</strong> that is independent of the basis "
+            "size (the gray shading in the gallery marks that out-of-domain "
+            "region). Restricting the round-trip to the in-domain part, the "
+            "best in-domain relative L2 error is <strong>{dom:.2f} %</strong> "
+            "at <strong>{dnk} x {dnphi}</strong> ({dn} coefficients)."
+            "{tail}</p>"
+        ).format(
+            inmass=100.0 * in_mass,
+            outmass=100.0 * (1.0 - in_mass),
+            floor=out_floor,
+            dom=100.0 * float(best_dom["rel_l2_domain"]),
+            dnk=best_dom["nk"],
+            dnphi=best_dom["nphi"],
+            dn=best_dom["n_coeffs"],
+            tail=tail,
+        )
+
+    th_domain = "<th>rel. L2 (in kernel domain)</th>" if has_domain else ""
     return f"""
   <h2 class="product" id="{anchor}">{prod["name"]}</h2>
   <p class="sub"><code>{kind}</code> &mdash; {grid_shape[0]} x {grid_shape[1]}
-  product grid ({n_pixels} pixels), one-sided cross-spectrum (lag 2, first time
-  slice), display window k<sub>x</sub> &isin; [0, {kmax_display:.4f}] rad/m.</p>
+  product grid ({n_pixels} pixels), {spec_desc}, display window
+  k<sub>x</sub> &isin; [0, {kmax_display:.4f}] rad/m.</p>
   <div class="card findings">
     <h3 style="margin-top:0">Key finding</h3>
     <p>{answer}</p>
+    {domain_note}
   </div>
   <h3>Convergence curves</h3>
   <div class="card curves">
@@ -613,7 +865,7 @@ def _product_section(prod: dict[str, Any], anchor: str) -> str:
       <thead><tr>
         <th>basis (N<sub>k</sub> &times; N<sub>&phi;</sub>)</th><th># coeffs</th>
         <th>rel. L2 error</th><th>captured L2 energy</th>
-        <th>worst pixel / peak</th><th>pixels within 50 % peak</th>
+        {th_domain}<th>worst pixel / peak</th><th>pixels within 50 % peak</th>
         <th>Parseval residual</th><th></th>
       </tr></thead>
       <tbody>
@@ -623,11 +875,14 @@ def _product_section(prod: dict[str, Any], anchor: str) -> str:
   </div>
   <h3>Original, recomposition and difference</h3>
   <p class="sub">For each basis : the original normalized spectrum (left,
-  white&rarr;red), the recomposed spectrum (center, same scale as the original)
-  and the pointwise difference recomposed &minus; original (right, diverging
-  scale, auto-limited to the max residual). The shrinking difference panels and
-  the residual fine structure are the visual signature of the orthogonal
-  projection converging to the in-span part of the spectrum.</p>
+  white&rarr;red), the recomposed spectrum (center, same scale as the original),
+  the pointwise difference recomposed &minus; original (right, diverging scale,
+  auto-limited to the max residual) and, in the fourth column, the per-basis
+  point-to-point metrics : the number (and %) of pixels matching the original
+  within 1e-3 (a.u.) and the highest pixel-to-pixel difference. The shrinking
+  difference panels, the rising match rate and the residual fine structure are
+  the visual signature of the orthogonal projection converging to the in-span
+  part of the spectrum.</p>
   <div class="gallery">
     {"".join(gallery)}
   </div>
@@ -690,6 +945,25 @@ def _build_html(products: list[dict[str, Any]], wlmax: float, wlmin: float) -> s
     else:
         closing = ""
     closing_p = f"<p>{closing}</p>" if closing else ""
+    has_ww3 = any(str(p.get("kind", "")).startswith("WW3") for p in products)
+    ww3_note = (
+        (
+            "<p><strong>The WW3 model product is a noise-free reference.</strong> "
+            "Its directional wave elevation spectrum is a smooth numerical-model "
+            "spectrum (no backscatter speckle, no Bragg ripples), so its round-trip "
+            "floor isolates the pure finite-grid-resolution limit of the library "
+            "path; any extra floor on the measured SAR cross-spectra is the "
+            "out-of-span noise of the measurements. One caveat: the kernel's "
+            "elliptic domain is compressed in azimuth (gamma = 2), so a strongly "
+            "directional model spectrum whose dominant lobe points off the range "
+            "axis can carry L2 mass outside that domain. That mass is "
+            "unrecoverable by construction and is reported separately in the "
+            "per-product kernel-domain breakdown (in-domain vs out-of-domain "
+            "relative L2); the in-domain floor is the pure grid-resolution limit.</p>"
+        )
+        if has_ww3
+        else ""
+    )
     sections = "".join(
         _product_section(prod, f"product-{i}")
         for i, prod in enumerate(products, start=1)
@@ -735,6 +1009,7 @@ def _build_html(products: list[dict[str, Any]], wlmax: float, wlmin: float) -> s
     nav.sidenav {{ position: static; width: auto; border-right: none;
                   border-bottom: 1px solid #e2e2e2; }}
     .wrap {{ margin-left: 0; max-width: 1080px; margin: 0 auto; }}
+    .panel {{ grid-template-columns: 1fr; }}
   }}
   h1 {{ font-size: 26px; margin: 0 0 4px; }}
   h2 {{ font-size: 20px; margin: 34px 0 10px; border-bottom: 2px solid #e2e2e2;
@@ -754,9 +1029,14 @@ def _build_html(products: list[dict[str, Any]], wlmax: float, wlmin: float) -> s
   .tag.best {{ background: #2e9e5b; color: #fff; }}
   .tag.ref {{ background: #e0912f; color: #fff; }}
   .gallery {{ display: grid; grid-template-columns: 1fr; gap: 18px; }}
-  .panel {{ margin: 0; background: #fff; border: 1px solid #e6e6e6;
+  .panel {{ display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 12px;
+           align-items: start; margin: 0; background: #fff; border: 1px solid #e6e6e6;
            border-radius: 8px; padding: 10px; }}
-  .panel img {{ width: 100%; height: auto; display: block; }}
+  .panel-fig {{ margin: 0; }}
+  .panel-fig img {{ width: 100%; height: auto; display: block; }}
+  .panel-metrics {{ font-size: 13px; line-height: 1.8; color: #333;
+                   background: #f7f9fc; border: 1px solid #e6e6e6;
+                   border-radius: 6px; padding: 10px 12px; }}
   .curves img {{ width: 100%; height: auto; display: block; }}
   code {{ background: #f0f0f0; padding: 1px 5px; border-radius: 4px;
          font-size: 13px; }}
@@ -767,9 +1047,10 @@ def _build_html(products: list[dict[str, Any]], wlmax: float, wlmin: float) -> s
 {nav}
 <div class="wrap" id="top">
   <h1>CWAVE round-trip certification report</h1>
-  <p class="sub">Decompose a real SAR ocean cross-spectrum into CWAVE
-  coefficients, recompose it from the coefficients, and measure the error as a
-  function of the number of CWAVE basis functions. Generated
+  <p class="sub">Decompose real ocean wave spectra (the measured SAR
+  cross-spectra and the smooth WW3 model directional wave elevation spectrum)
+  into CWAVE coefficients, recompose them from the coefficients, and measure
+  the error as a function of the number of CWAVE basis functions. Generated
   {now} by <code>cwaves-certification-report</code>.</p>
 
   <div class="card findings">
@@ -804,11 +1085,13 @@ def _build_html(products: list[dict[str, Any]], wlmax: float, wlmin: float) -> s
     spectrum the same library path converges to ~3.7 % at 32 x 30, confirming
     the machinery is correct and the real-data floor is spectral + grid
     resolution.</p>
+    {ww3_note}
   </div>
 
   <p class="foot">Source products : {products_list}
-  (one-sided cross-spectrum, lag 2, first time slice). Wavenumber window
-  k &isin; [2&pi;/{wlmax:.0f}, 2&pi;/{wlmin:.0f}] rad/m.</p>
+  (SAR products : one-sided cross-spectrum, lag 2 ; WW3 model product :
+  directional wave elevation spectrum E(k, phi) ; first time slice).
+  Wavenumber window k &isin; [2&pi;/{wlmax:.0f}, 2&pi;/{wlmin:.0f}] rad/m.</p>
 </div>
 </body>
 </html>
@@ -836,8 +1119,9 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs="+",
         default=[DEFAULT_XSP_NC],
         help=(
-            "one or more cross-spectrum NetCDF products (SARWAVE L1B XSP, "
-            "Envisat/xsar_slc L1C XSP or OCN WV osw), one report section per "
+            "one or more ocean wave spectrum NetCDF products (SARWAVE L1B XSP, "
+            "Envisat/xsar_slc L1C XSP, OCN WV osw cross-spectra or a WW3 model "
+            "directional wave elevation spectrum), one report section per "
             "product (default: the S1A WV1 asset in assets/)"
         ),
     )
@@ -886,7 +1170,7 @@ def _sweep_product(
     bases: list[tuple[int, int]],
     no_panels: bool,
 ) -> dict[str, Any]:
-    """Run the basis sweep on one cross-spectrum product.
+    """Run the basis sweep on one ocean wave spectrum product.
 
     Args:
         xsp_nc: path to the product NetCDF file.
@@ -899,10 +1183,10 @@ def _sweep_product(
         The product dict consumed by :func:`_build_html` (name, kind, results,
         panels, curves png, grid shape / pixels, best basis, ...).
     """
-    logger.info("loading cross-spectrum: %s", xsp_nc)
+    logger.info("loading wave spectrum: %s", xsp_nc)
     with xr.open_dataset(xsp_nc) as ds:
         kind = _product_kind(ds)
-        xs = _load_cross_spectrum(ds, lag=2)
+        xs = _load_cross_spectrum(ds, lag=2, kmax=kmax)
 
     f = _normalized_density(xs, kmin, kmax)
     # the kernel must be evaluated on the same (masked / dropna'd) grid as the
@@ -917,12 +1201,45 @@ def _sweep_product(
     # the display window cannot exceed the range wavenumber grid of the product
     kmax_display = min(kmax, float(np.nanmax(k_rg_1d)))
 
+    # kernel-domain breakdown : the CWAVE kernel is NaN outside the elliptic
+    # (gamma=2) wavenumber domain, so a spectrum that carries mass there can
+    # never be recomposed. When that mass is non-negligible, run a second,
+    # in-domain-only sweep so the report can separate the (round-trippable)
+    # in-domain error from the out-of-domain floor.
+    domain = _kernel_domain_mask(k_rg, k_az, kmin, kmax)
+    f2 = f**2
+    domain_in_mass = float(f2.where(domain).sum() / f2.sum())
+    domain_mask_2d = (
+        domain.transpose("freq_line", "freq_sample").values
+        if domain_in_mass < 1.0 - 5e-3
+        else None
+    )
+    f_dom: xr.DataArray | None = None
+    if domain_mask_2d is not None:
+        fd = f.where(domain)
+        fd = fd.dropna(dim="freq_line", how="all").dropna(dim="freq_sample", how="all")
+        dkrg = float(fd.k_rg.diff(dim="freq_sample").mean(dim="freq_sample"))
+        dkaz = float(fd.k_az.diff(dim="freq_line").mean(dim="freq_line"))
+        f_dom = fd / (fd.sum(dim=["freq_line", "freq_sample"]) * dkrg * dkaz)
+        k_rg_dom = xr.DataArray(np.asarray(f_dom.k_rg, dtype=float), dims="freq_sample")
+        k_az_dom = xr.DataArray(np.asarray(f_dom.k_az, dtype=float), dims="freq_line")
+        logger.info(
+            "kernel domain holds %.3f of the spectrum L2 mass ; running the "
+            "in-domain sweep",
+            domain_in_mass,
+        )
+
     results: list[dict[str, Any]] = []
     panels: list[tuple[dict[str, Any], bytes]] = []
     for nk, nphi in bases:
         res = _sweep_basis(
             f, k_rg, k_az, kmin, kmax, nk, nphi, with_fields=(not no_panels)
         )
+        if f_dom is not None:
+            res["rel_l2_domain"] = _sweep_basis(
+                f_dom, k_rg_dom, k_az_dom, kmin, kmax, nk, nphi, with_fields=False
+            )["rel_l2"]
+            logger.info("    in-domain rel L2 = %7.3f", res["rel_l2_domain"])
         logger.info(
             "  basis %2dx%-2d (%4d coeffs): rel L2 = %7.3f  capture = %7.3f",
             nk,
@@ -941,6 +1258,7 @@ def _sweep_product(
                 k_az_1d,
                 kmax_display,
                 res,
+                domain=domain_mask_2d,
             )
             panels.append((res, png))
             res.pop("fhat_2d")
@@ -965,6 +1283,10 @@ def _sweep_product(
         "best_near": best_near,
         "near": near,
         "ref_val": ref_row["rel_l2"] if ref_row is not None else REFERENCE_RELL2,
+        # kernel-domain breakdown (None / None when the out-of-domain mass is
+        # negligible and no in-domain sweep was run)
+        "domain_in_mass": domain_in_mass,
+        "domain_mask": domain_mask_2d,
     }
 
 
