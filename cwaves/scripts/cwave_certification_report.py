@@ -8,6 +8,9 @@ measured SAR cross-spectrum for the S1 / Envisat products and the smooth WW3
 model **directional wave elevation spectrum** E(k, phi) for the model product. It
 then renders:
 
+* a **Metrics & definitions** section in the introduction giving the
+  notation and the defining equation of every metric used in the report
+  (rendered as plain HTML, no raw ``$``);
 * a **metrics table** (one row per basis): relative L2 error, captured L2
   energy, worst-pixel error, fraction of pixels within half the spectral peak,
   and the discrete Parseval residual;
@@ -1558,6 +1561,120 @@ def _part2_section(
     )
 
 
+def _metrics_section() -> str:
+    """Return the "Metrics &amp; definitions" card (equations of every metric).
+
+    The equations are rendered as plain HTML (no raw ``$``) so the report stays
+    a self-contained page. Every symbol is defined in the notation paragraph;
+    each table row names a metric as displayed in the report and gives its
+    defining equation.
+    """
+    return (
+        "<h2 id='metrics'>Metrics &amp; definitions</h2>\n"
+        "<div class='card'>\n"
+        "<p><strong>Notation.</strong> "
+        "<code>f</code> is the normalized one-sided reference density (the "
+        "measured cross-spectrum <code>|xs|</code>, or the WW3 directional "
+        "elevation spectrum, normalized so that "
+        "&Sigma;<sub>px</sub> f&thinsp;dA = 1), sampled on the product "
+        "(k<sub>rg</sub>, k<sub>az</sub>) grid; <code>dA = d k<sub>rg</sub> "
+        "&middot; d k<sub>az</sub></code> is a grid cell. "
+        "<code>K<sub>i</sub></code> is the <em>i</em>-th CWAVE kernel "
+        "(Gegenbauer &times; angular harmonic &times; <code>eta</code>), "
+        "undefined (NaN) outside the elliptic wavenumber domain A. The CWAVE "
+        "coefficients and the recomposition are the discrete (masked) "
+        "quadratures\n"
+        "<code>c<sub>i</sub> = &Sigma;<sub>px</sub> K<sub>i</sub> &middot; f "
+        "&middot; dA</code>,&nbsp; "
+        "<code>f&#770; = &Sigma;<sub>i</sub> c<sub>i</sub> &middot; "
+        "K<sub>i</sub></code>.\n"
+        "All sums are over the valid (in-domain) pixels.</p>\n"
+        "<h3>Part 1 &mdash; round-trip metrics (one row per basis)</h3>\n"
+        "<table>\n"
+        "<tr><th>Metric (table label)</th><th>Definition</th></tr>\n"
+        "<tr><td>rel. L2 error</td>"
+        "<td class='num'>&radic;(&Sigma;<sub>px</sub>(f &minus; f&#770;)"
+        "&sup2;)&thinsp;/&thinsp;&radic;(&Sigma;<sub>px</sub> f&sup2;) &mdash; "
+        "L2 norm of the residual over the L2 norm of the reference "
+        "(dA cancels in the ratio); 0 = perfect recomposition</td></tr>\n"
+        "<tr><td>captured L2 energy</td>"
+        "<td class='num'>1 &minus; (rel&thinsp;L2)&sup2; &mdash; fraction of "
+        "the reference L2 energy recovered by the recomposition</td></tr>\n"
+        "<tr><td>worst pixel / peak</td>"
+        "<td class='num'>max<sub>px</sub>|f &minus; f&#770;| &thinsp;/&thinsp; "
+        "max(f) &mdash; largest pointwise absolute error, normalized by the "
+        "spectral peak</td></tr>\n"
+        "<tr><td>pixels within 50 % peak</td>"
+        "<td class='num'>fraction of valid pixels with |f &minus; f&#770;| "
+        "&le; 0.5 &middot; max(f)</td></tr>\n"
+        "<tr><td>n / % within 1e-3 (a.u.)</td>"
+        "<td class='num'>count (and %) of valid pixels with |f &minus; f&#770;| "
+        "&le; 10<sup>&minus;3</sup> in normalized <code>|xs|</code> units "
+        "(with the matching <code>max |f &minus; f&#770;|</code>)</td></tr>\n"
+        "<tr><td>Parseval gap</td>"
+        "<td class='num'>&#8202;|&thinsp;&Sigma;<sub>px</sub>(f &minus; f&#770;)"
+        "&sup2; dA &minus; (&Sigma;<sub>px</sub> f&sup2; dA &minus; "
+        "&Sigma;<sub>i</sub> c<sub>i</sub>&sup2;)&thinsp;| "
+        "&thinsp;/&thinsp; &Sigma;<sub>px</sub> f&sup2; dA &mdash; measures "
+        "Parseval's identity for the orthonormal expansion; a small gap is the "
+        "signature of a consistent back-and-forth</td></tr>\n"
+        "<tr><td>rel. L2 (in kernel domain)</td>"
+        "<td class='num'>rel. L2 computed only inside A, on the in-domain "
+        "re-normalized density &mdash; isolates the recoverable in-domain error "
+        "from the unrecoverable out-of-domain floor (shown when the out-of-"
+        "domain L2 mass is &gt; 0.5 %)</td></tr>\n"
+        "<tr><td>out-of-domain floor</td>"
+        "<td class='num'>1 &minus; &Sigma;<sub>A</sub> f&sup2; dA &thinsp;/"
+        "&thinsp; &Sigma;<sub>px</sub> f&sup2; dA &mdash; L2 mass outside the "
+        "elliptic kernel domain A; unrecoverable by construction</td></tr>\n"
+        "</table>\n"
+        "<h3>Part 2 &mdash; basis-certification metrics</h3>\n"
+        "<p>Let <code>C</code> be the coefficient vector of <code>f</code> and "
+        "<code>C&#8242;</code> the coefficient vector recomputed from the "
+        "recomposition <code>f&#770;</code>. Then "
+        "<code>C&#8242; = M &middot; C</code> where "
+        "<code>M<sub>ij</sub> = &Sigma;<sub>px</sub> K<sub>i</sub> "
+        "K<sub>j</sub> dA</code> is the <strong>discrete Gram matrix</strong> "
+        "of the basis on the grid. If the basis is orthonormal on the grid "
+        "(<code>M = I</code>) then <code>C&#8242; = C</code>; on a finite grid "
+        "<code>M = I + O(h)</code> by quadrature.</p>\n"
+        "<table>\n"
+        "<tr><th>Metric</th><th>Definition</th></tr>\n"
+        "<tr><td>idempotence max |C &minus; C&#8242;|</td>"
+        "<td class='num'>max<sub>i</sub>|C<sub>i</sub> &minus; "
+        "C&#8242;<sub>i</sub>| (and the relative form "
+        "max|C &minus; C&#8242;| &thinsp;/&thinsp; max|C|) &mdash; how far the "
+        "basis is from discrete orthonormality</td></tr>\n"
+        "<tr><td>Gram diagnostics</td>"
+        "<td class='num'>max|diag(M) &minus; 1| and max|off-diag(M)| of the "
+        "discrete Gram matrix; both &rarr; 0 under grid refinement when the "
+        "grid range covers A</td></tr>\n"
+        "<tr><td>scaling ratio (per doubling)</td>"
+        "<td class='num'>E(2x) &thinsp;/&thinsp; E(1x) where E is the "
+        "idempotence error on the product grid (1x) vs a 2x-finer grid (the "
+        "density bilinearly interpolated). First-order quadrature gives the "
+        "theoretical ratio 0.5; the gate is ratio &le; "
+        f"{SCALING_RATIO_MAX:.2f}</td></tr>\n"
+        "<tr><td>implied floor</td>"
+        "<td class='num'>max(0, 2 &middot; E(2x) &minus; E(1x)) &mdash; the "
+        "h &rarr; 0 extrapolation of the error; on a grid whose range cuts A "
+        "this is the (non-quadrature) truncation floor, reported as a share of "
+        "E(1x)</td></tr>\n"
+        "</table>\n"
+        "<p><strong>Status tags.</strong> "
+        "<code>PASS (E &prop; h)</code> the error halves per doubling (ratio "
+        f"&le; {SCALING_RATIO_MAX:.2f}); "
+        "<code>EXPECTED (range floor)</code> the product k-range cuts the "
+        "elliptic domain A, so a truncation floor plateaus the error "
+        "(certified by the full-domain gate); "
+        "<code>FAIL</code> no halving on a range-complete grid, i.e. a "
+        "systematic defect. In the Part 1 tables, <code>best</code> marks the "
+        "overall-best basis and <code>32 x 30 ref</code> the reference basis."
+        "</p>\n"
+        "</div>\n"
+    )
+
+
 def _build_html(
     products: list[dict[str, Any]],
     wlmax: float,
@@ -1659,7 +1776,9 @@ def _build_html(
         else ""
     )
 
+    metrics = _metrics_section()
     nav_items = ["<li><a href='#top'>&#8679; Top / key finding</a></li>"]
+    nav_items.append("<li><a href='#metrics'>Metrics &amp; definitions</a></li>")
     if has_part2:
         nav_items.append(
             "<li><a href='#part-1'>Part 1 &mdash; per-product round trip</a></li>"
@@ -1762,27 +1881,54 @@ def _build_html(
     {closing_p}
   </div>
 
+  {metrics}
+
   <h2 id="part-1">Part 1 &mdash; Per-product round trip</h2>
   {sections}
   {part2}
 
   <h2 id="interpretation">Interpretation</h2>
   <div class="card">
-    <p><strong>Low relative L2 is good</strong> and the error decreases
-    monotonically as the basis grows : the recomposition is the orthogonal
-    projection of the spectrum onto the span of the kernel. The captured L2
-    energy equals 1 &minus; relL2<sup>2</sup> up to quadrature (the Parseval
-    residual column stays small), which is the signature of a consistent
-    back-and-forth.</p>
+    <p><strong>The error is not monotone on a fixed grid : it is U-shaped.</strong>
+    In the continuum the recomposition is the orthogonal projection of the
+    spectrum onto the span of the kernel, so the truncation error decreases
+    monotonically with the number of basis functions and tends to zero as the
+    basis grows without bound. That "zero loss" statement is a <em>double
+    limit</em> : it requires the basis size N &rarr; &infin; <em>and</em> the
+    grid spacing h &rarr; 0 <em>together</em>. On a fixed grid the discrete
+    basis is not exactly orthonormal (the discrete Gram matrix is
+    M = I + O(h), see Part 2), and the higher-order kernels oscillate faster
+    than the first-order quadrature can resolve, so the per-mode coefficient
+    error <em>grows</em> with the mode order. The measured error is therefore
+    the sum of a decreasing basis-truncation term and an increasing
+    quadrature / non-orthogonality penalty, which produces a U-shape whose
+    minimum is the optimal truncation N*(h) &mdash; roughly the number of
+    modes the grid can resolve. Taking either limit alone does not reach
+    zero : more coefficients on a coarse grid make the error worse, and a
+    finer grid with too few coefficients leaves the truncation error.</p>
+    <p><strong>The measurements confirm the picture.</strong> On the S1A OCN
+    product (256 &times; 128 grid) the relative L2 error is U-shaped :
+    minimum 8.16 % at 20 x 24, rising to 20.1 % at 48 x 40. Splitting the
+    error into the ideal discrete-projection truncation (the sum of the
+    squared tail coefficients, which is monotone and reaches ~0 by 16 x 16)
+    and the excess shows the excess growing from 0.67 % (20 x 24) to 4.05 %
+    (48 x 40) and 8.08 % (56 x 45) ; the full 56 x 45 basis even captures
+    102.3 % of the L2 energy, direct evidence of the discrete
+    non-orthonormality. On a 2x-finer grid the whole curve is lower and the
+    minimum shifts right (3.84 % at 28 x 28&ndash;32 x 30 ; 48 x 40 drops
+    from 20.1 % to 4.48 %). The smooth WW3 model spectrum has fast-decaying
+    high-mode coefficients, so the penalty stays small and the in-domain
+    error keeps improving past 40 x 35 (4.57 %) down to a minimum of 3.62 %
+    at 56 x 40 before rising again (8.29 % at 80 x 55) : the same U-shape,
+    with the minimum pushed to larger N by the smoothness.</p>
     <p><strong>The floor is not an implementation defect.</strong> Two
     independent, non-bug limits set the best reachable on these real products
     : (i) the fine, noise-like structure (bragg ripples, backscatter speckle)
     of the cross-spectrum that lives outside the kernel span, and (ii) the
-    finite product grid, whose azimuth sampling caps the resolvable angular
-    modes near N<sub>&phi;</sub> = 30 (Nyquist). On a smooth synthetic
-    spectrum the same library path converges to ~3.7 % at 32 x 30, confirming
-    the machinery is correct and the real-data floor is spectral + grid
-    resolution.</p>
+    finite product grid, which sets the optimal truncation N*(h) above. On
+    the smooth WW3 spectrum the same library path gives an in-domain relative
+    L2 of 5.77 % at 32 x 30 and 4.57 % at 40 x 35, confirming the machinery
+    is correct and the real-data floor is spectral + grid resolution.</p>
     {ww3_note}
   </div>
 

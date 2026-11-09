@@ -25,6 +25,7 @@ from cwaves.scripts.cwave_certification_report import (
     _kernel_domain_mask,
     _l1b_cross_spectrum_compat,
     _load_cross_spectrum,
+    _metrics_section,
     _normalized_density,
     _parse_bases,
     _png_bytes,
@@ -551,6 +552,48 @@ def test_kernel_domain_mask():
 
 
 # ---------------------------------------------------------------------------
+# _metrics_section
+# ---------------------------------------------------------------------------
+
+
+def test_metrics_section_present_and_self_contained():
+    html = _metrics_section()
+    # the section has the anchor used by the side nav
+    assert "id='metrics'" in html
+    assert "Metrics &amp; definitions" in html
+    # the report is a self-contained page : no raw LaTeX dollar signs
+    assert "$" not in html
+    # both metric families are defined, with their equations as entities
+    assert "Part 1" in html
+    assert "Part 2" in html
+    assert "discrete Gram matrix" in html
+    # every Part 1 table metric is named
+    for label in (
+        "rel. L2 error",
+        "captured L2 energy",
+        "worst pixel / peak",
+        "pixels within 50 % peak",
+        "Parseval gap",
+        "rel. L2 (in kernel domain)",
+        "out-of-domain floor",
+    ):
+        assert label in html
+
+
+def test_build_html_metrics_section():
+    # the metrics section is wired into the assembled report (before Part 1)
+    # and its nav entry is present
+    results = [_res(32, 30, 0.1533), _res(32, 32, 0.1529)]
+    html = _build_html([_prod("x.nc", results)], 600.0, 25.0)
+    assert "id='metrics'" in html
+    assert "Metrics &amp; definitions" in html
+    assert "href='#metrics'" in html
+    # the section sits between the top-level finding and Part 1
+    assert html.find("id='metrics'") < html.find('id="part-1"')
+    assert "$" not in html
+
+
+# ---------------------------------------------------------------------------
 # _build_html (key-finding branches)
 # ---------------------------------------------------------------------------
 
@@ -664,7 +707,9 @@ def test_build_html_no_domain_breakdown():
     results = [_res(32, 30, 0.1533), _res(32, 32, 0.1529)]
     prod = _prod("s1a.nc", results, domain_in_mass=0.999, domain_mask=None)
     html = _build_html([prod], 600.0, 25.0)
-    assert "rel. L2 (in kernel domain)" not in html
+    # the per-product table column header is absent (the "Metrics &
+    # definitions" section names the metric in a <td> row, not a <th>)
+    assert "<th>rel. L2 (in kernel domain)</th>" not in html
     assert "Kernel-domain breakdown" not in html
     assert "in-kernel-domain rel. L2" not in html
 
@@ -883,9 +928,10 @@ def test_build_html_multi_product():
     # the wavelength window is rendered from wlmax / wlmin
     assert "2&pi;/600" in html
     assert "2&pi;/25" in html
-    # one curves figure per product + two tables
+    # one curves figure per product + two per-product tables (plus the two
+    # static "Metrics & definitions" tables in the introduction)
     assert html.count("data:image/png;base64,") == 2
-    assert html.count("<table>") == 2
+    assert html.count("<table>") == 4
 
 
 def test_build_html_multi_product_not_all_flat():
