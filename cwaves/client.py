@@ -13,7 +13,9 @@ latest ``xsar_slc`` commits.
   and no ``s1_int2.xml`` dependency. This is the primary input.
 * **OCN WV measurement** products (``s1d-...-ocn-...nc``) : the polar spectrum
   ``oswPolSpec`` is resampled to a cartesian cross-spectrum via
-  :func:`polar_to_cartesian` before the CWAVE computation.
+  :func:`polar_to_cartesian` before the CWAVE computation, or computed
+  **directly on the native polar grid** (no resampling) with the
+  ``--polar-direct`` flag via :func:`compute_cwaves_from_osw_polar`.
 """
 
 import argparse
@@ -26,7 +28,10 @@ import numpy as np
 import xarray as xr
 from scipy.interpolate import RegularGridInterpolator
 
-from cwaves.compute_cwaves import compute_cwave_parameters
+from cwaves.compute_cwaves import (
+    compute_cwave_parameters,
+    compute_cwave_parameters_polar,
+)
 from cwaves.config import get_default_config
 
 logger = logging.getLogger("cwaves.client")
@@ -129,6 +134,46 @@ def compute_cwaves_from_osw(
         cp = compute_cwave_parameters(xs, **cwave)
     logger.info(
         "CWAVE parameters computed: %d kernels (k_gp) x %d (phi_hf)",
+        cp.sizes["k_gp"],
+        cp.sizes["phi_hf"],
+    )
+    return cast("xr.DataArray", cp)
+
+
+def compute_cwaves_from_osw_polar(input_nc: str, **cwave: Any) -> xr.DataArray:
+    """Compute the CWAVE parameters directly on the OCN WV polar spectrum.
+
+    Polar-grid counterpart of :func:`compute_cwaves_from_osw`: the OCN WV
+    measurement's ``oswPolSpec`` (a real polar spectrum on a log-spaced
+    ``oswK`` x uniform ``oswPhi`` grid) is fed **as is** to
+    :func:`cwaves.compute_cwave_parameters_polar`, which integrates the CWAVE
+    projection with the exact polar cell areas. No resampling to a cartesian
+    wavenumber grid is performed (no :func:`polar_to_cartesian` step).
+
+    Args:
+        input_nc: path to the OCN WV measurement NetCDF file.
+        **cwave: ``cwave_*`` parameters forwarded to
+            :func:`cwaves.compute_cwave_parameters_polar` (defaults from the
+            packaged ``default_config.yml`` if not given).
+
+    Returns:
+        The CWAVE parameters ``xarray.DataArray`` (``k_gp`` x ``phi_hf``).
+    """
+    if not os.path.exists(input_nc):
+        raise FileNotFoundError(input_nc)
+    if not cwave:
+        cwave = get_default_config()["cwave"]
+    with xr.open_dataset(input_nc) as ds:
+        if "oswPolSpec" not in ds:
+            raise ValueError(f"oswPolSpec not found in {input_nc}")
+        logger.info("loaded OCN WV measurement %s", input_nc)
+        pol = ds["oswPolSpec"].isel(oswAzSize=0, oswRaSize=0)
+        k = ds["oswK"].values  # (K,) rad/m
+        phi = np.deg2rad(ds["oswPhi"].values)  # (phi,) radians
+        cp = compute_cwave_parameters_polar(pol, k, phi, **cwave)
+    logger.info(
+        "CWAVE parameters computed (polar-direct, no cartesian resampling): "
+        "%d kernels (k_gp) x %d (phi_hf)",
         cp.sizes["k_gp"],
         cp.sizes["phi_hf"],
     )
@@ -241,6 +286,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="path to the L1B XSP cross-spectrum NetCDF file",
     )
     parser.add_argument(
+        "--polar-direct",
+        action="store_true",
+        help="OCN WV: compute the CWAVE parameters directly on the polar "
+        "oswPolSpec grid (no resampling to a cartesian wavenumber grid)",
+    )
+    parser.add_argument(
         "--n-range",
         type=int,
         default=DEFAULT_N_RANGE,
@@ -299,6 +350,8 @@ def entrypoint(argv: list[str] | None = None) -> int:
             out = compute_cwaves_from_l1b(
                 args.input_nc_l1b, lag=args.lag, pol=args.pol, **cwave
             )
+        elif args.polar_direct:
+            out = compute_cwaves_from_osw_polar(args.input_nc_osw, **cwave)
         else:
             out = compute_cwaves_from_osw(
                 args.input_nc_osw,

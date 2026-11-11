@@ -161,6 +161,181 @@ def compute_cwave_parameters(
     return cwave_parameters.rename("cwave_params")  # .to_dataset()
 
 
+def _polar_k_weights(k):
+    """Per-bin radial cell weights ``w_i`` for a polar ``k dk`` quadrature.
+
+    ``sum_i w_i * f(k_i)`` approximates ``integral f(k) k dk``. The cell
+    boundaries are the geometric means of adjacent sample values, which is
+    exact for a log-spaced grid (where the samples are the cell centres in
+    log-space); the two outer boundaries are extrapolated by half of the
+    adjacent log step.
+    """
+    lnk = np.log(k)
+    lnb = 0.5 * (lnk[1:] + lnk[:-1])
+    lnb = np.concatenate(
+        [
+            [lnk[0] - 0.5 * (lnk[1] - lnk[0])],
+            lnb,
+            [lnk[-1] + 0.5 * (lnk[-1] - lnk[-2])],
+        ]
+    )
+    return 0.5 * (np.exp(2.0 * lnb[1:]) - np.exp(2.0 * lnb[:-1]))
+
+
+def _polar_phi_weights(phi):
+    """Per-bin angular cell widths (periodic, full circle) for a ``dphi`` rule.
+
+    The width of bin ``i`` is the distance to the midpoints of its two
+    neighbours, with the :math:`2\\pi` wrap-around for the first and last bins.
+    For a uniform grid this reduces to the constant :math:`2\\pi/n` for every
+    bin.
+    """
+    n = phi.size
+    if n == 1:
+        return np.array([2.0 * np.pi])
+    d = np.empty(n)
+    d[:-1] = np.diff(phi)
+    d[-1] = phi[0] + 2.0 * np.pi - phi[-1]
+    return 0.5 * (d + np.roll(d, 1))
+
+
+def compute_cwave_parameters_polar(
+    spec, k, phi, cwave_wlmax=600, cwave_wlmin=25, cwave_Nk=4, cwave_Nphi=5, **kwargs
+):
+    """Compute the CWAVE parameters directly on a polar ``(k, phi)`` grid.
+
+    This is the polar-grid counterpart of :func:`compute_cwave_parameters`.
+    It integrates the same CWAVE projection
+    :math:`P_{n,m} = \\int_A K_{n,m}\\, |X_S|_{\\rm norm}\\, \\mathrm{d}A`
+    but **on the native polar wavenumber grid** (e.g. the ESA OCN WV product's
+    ``oswPolSpec``, a real polar spectrum on a log-spaced ``k`` x uniform
+    ``phi`` grid) instead of first resampling the spectrum onto a cartesian
+    (``k_rg``, ``k_az``) grid. The area element is the polar one,
+    :math:`\\mathrm{d}A = k\\, \\mathrm{d}k\\, \\mathrm{d}\\varphi`, so each
+    cell weight is the exact polar cell area :math:`k_i\\, \\Delta k_i\\,
+    \\Delta\\varphi_j` (see :func:`_polar_k_weights` and
+    :func:`_polar_phi_weights`). This avoids the resampling step of
+    :func:`cwaves.client.polar_to_cartesian` and is exact for the product's own
+    (log-)polar sampling.
+
+    The rest of the input contract is identical to
+    :func:`compute_cwave_parameters` (``repository_specifications.md`` section
+    6): the real, non-negative modulus :math:`|spec|` is used (the complex
+    phase is discarded), the integration is over the elliptic wavenumber domain
+    ``A`` (paper equations B1-B13) intersected with the wavenumber annulus
+    :math:`k_{min} < k < k_{max}` and restricted to the **one-sided (half) range
+    domain** :math:`k_x = k\\cos\\varphi \\ge 0` (in polar coordinates the
+    circular annulus :math:`k_{min}<\\sqrt{k_x^2+k_y^2}<k_{max}` is exactly
+    :math:`k_{min}<k<k_{max}`, and the one-sided half is :math:`\\cos\\varphi
+    \\ge 0`). The normalized spectrum has unit mass over that one-sided
+    annulus, as in the cartesian path.
+
+    Args:
+        spec: the (real or complex) polar cross-spectrum, 2-D with shape
+            ``(len(phi), len(k))`` (first index = angle, second = wavenumber
+            magnitude), matching the OCN product's ``oswPolSpec`` layout. Only
+            its modulus is used.
+        k: 1-D array of wavenumber magnitudes (rad/m), strictly positive and
+            strictly increasing. A log-spaced grid is expected (OCN product).
+        phi: 1-D array of angles (rad), strictly increasing, covering the full
+            :math:`2\\pi` circle. The OCN product's ``oswPhi = 0`` is the
+            **range** direction (``k_x = k cos(phi)``).
+        cwave_wlmax (float, optional) : maximum wavelength [m] (sets kmin).
+        cwave_wlmin (float, optional) : minimum wavelength [m] (sets kmax).
+        cwave_Nk (int, optional) : number of Gegenbauer basis functions.
+        cwave_Nphi (int, optional) : number of harmonic basis functions.
+    Keywords Args:
+        kwargs (): keyword arguments passed to :func:`compute_kernel`
+            (e.g. ``save_cwave_kernel``).
+
+    Returns:
+        (xarray.DataArray) : the CWAVE parameters, dims ``(k_gp, phi_hf)``,
+        named ``cwave_params``.
+
+    Raises:
+        ValueError: if the input grids are malformed (non-positive / non-
+            increasing ``k``, ``phi`` not spanning the full circle, shape
+            mismatch) or if the (masked) spectrum carries zero mass.
+    """
+    spec = np.asarray(spec)
+    k = np.asarray(k, dtype=float)
+    phi = np.asarray(phi, dtype=float)
+
+    if spec.ndim != 2:
+        raise ValueError(f"spec must be 2-D (phi, k), got shape {spec.shape}")
+    if k.ndim != 1 or phi.ndim != 1:
+        raise ValueError("k and phi must be 1-D arrays")
+    if k.size < 2 or phi.size < 2:
+        raise ValueError("k and phi must each have at least 2 samples")
+    if spec.shape != (phi.size, k.size):
+        raise ValueError(
+            f"spec shape {spec.shape} does not match (len(phi)={phi.size}, "
+            f"len(k)={k.size})"
+        )
+    if np.any(k <= 0.0):
+        raise ValueError("k must be strictly positive (rad/m)")
+    if np.any(np.diff(k) <= 0.0):
+        raise ValueError("k must be strictly increasing")
+    if np.any(np.diff(phi) <= 0.0):
+        raise ValueError("phi must be strictly increasing")
+    if phi[-1] - phi[0] >= 2.0 * np.pi:
+        raise ValueError("phi must span (but not exceed) one full 2*pi circle")
+
+    kmin = 2.0 * np.pi / cwave_wlmax
+    kmax = 2.0 * np.pi / cwave_wlmin
+
+    # real, non-negative modulus (complex phase discarded), as in
+    # compute_cwave_parameters
+    S = np.abs(spec)
+
+    # one-sided (half) range domain: kx = k cos(phi) >= 0  ->  cos(phi) >= 0.
+    # The tiny tolerance keeps the kx = 0 boundary cells (phi = 90 / 270 deg),
+    # which the cartesian path also integrates (its k_rg = 0 column).
+    one_sided = np.cos(phi) >= -1.0e-6
+    # circular annulus kmin < sqrt(kx^2 + ky^2) < kmax  ==  kmin < k < kmax
+    # in polar coordinates (kk = k)
+    ann = (k > kmin) & (k < kmax)
+
+    # per-cell polar area weights: dA = k dk dphi
+    w = _polar_phi_weights(phi)[:, None] * _polar_k_weights(k)[None, :]
+
+    # unit-mass normalisation over the one-sided annulus (regions outside the
+    # elliptic domain A are included in the mass, exactly as in the cartesian
+    # path, where the kernel's NaN is only applied at the final sum)
+    mask = one_sided[:, None] & ann[None, :] & ~np.isnan(S)
+    mass = float(np.nansum(np.where(mask, S * w, np.nan)))
+    if not np.isfinite(mass) or mass <= 0.0:
+        raise ValueError(
+            "the polar spectrum has zero (or non-finite) mass on the one-sided "
+            "annulus kmin < k < kmax, kx >= 0: nothing to normalise. Check "
+            "cwave_wlmax / cwave_wlmin and the input spectrum."
+        )
+    Snorm = np.where(mask, S * w / mass, np.nan)
+
+    # kernel evaluated at kx = k cos(phi), ky = k sin(phi); compute_kernel
+    # returns NaN outside the elliptic domain A (via sqrt(1 - alpha_k^2)),
+    # which the skipna sum below excludes from the integral
+    kx = k[None, :] * np.cos(phi)[:, None]
+    ky = k[None, :] * np.sin(phi)[:, None]
+    krg = xr.DataArray(kx, dims=("phi", "k"), coords={"phi": phi, "k": k})
+    kaz = xr.DataArray(ky, dims=("phi", "k"), coords={"phi": phi, "k": k})
+    with np.errstate(invalid="ignore"):
+        kernel = compute_kernel(
+            krg=krg,
+            kaz=kaz,
+            kmin=kmin,
+            kmax=kmax,
+            cwave_Nk=cwave_Nk,
+            cwave_Nphi=cwave_Nphi,
+            save_cwave_kernel=kwargs.pop("save_cwave_kernel", False),
+        )
+    cwave_parameters = (
+        kernel.cwave_kernel * xr.DataArray(Snorm, dims=("phi", "k"))
+    ).sum(dim=("phi", "k"), skipna=True, min_count=1)
+    cwave_parameters.attrs.update({"long_name": "CWAVE parameters (polar grid)"})
+    return cwave_parameters.rename("cwave_params")
+
+
 def compute_kernel(
     krg, kaz, kmin, kmax, cwave_Nk=4, cwave_Nphi=5, save_cwave_kernel=False
 ):

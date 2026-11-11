@@ -118,3 +118,46 @@ The original ``xsar_slc`` implementation was missing the :math:`\sqrt{\cdot}`
 and had a cancelling ``tmp`` term in :math:`\eta`, which made the kernels
 non-orthogonal (about 24-39 % deviation). See ``repository_specifications.md``
 (section 5) for the full investigation.
+
+Direct polar-grid computation
+-----------------------------
+
+The CWAVE projection of the first section is a plain 2-D integral over the
+wavenumber domain, so it can be evaluated on **any** wavenumber grid. For a
+spectrum natively sampled on a polar grid (the ESA OCN WV product's
+``oswPolSpec`` : log-spaced wavenumber magnitude :math:`k` x uniform angle
+:math:`\varphi`), :func:`cwaves.compute_cwave_parameters_polar` integrates it
+**directly in polar coordinates**, without resampling to a cartesian grid.
+The area element is the polar one,
+
+.. math::
+
+   \mathrm{d}A = \mathrm{d}k_x\, \mathrm{d}k_y = k\, \mathrm{d}k\,
+   \mathrm{d}\varphi,
+
+so each cell weight is the exact polar cell area
+:math:`k_i\, \Delta k_i\, \Delta\varphi_j` (geometric-mean cell boundaries in
+:math:`k` — exact for the OCN log-spaced grid — and periodic cell widths in
+:math:`\varphi`). The rest of the input contract is identical to the cartesian
+path :
+
+* the real, non-negative modulus :math:`|spec|` is used (the complex phase is
+  discarded),
+* the integration is over the elliptic domain :math:`A` intersected with the
+  wavenumber annulus — the circular annulus
+  :math:`k_{min} < \sqrt{k_x^2 + k_y^2} < k_{max}` is exactly
+  :math:`k_{min} < k < k_{max}` in polar coordinates,
+* the one-sided (half) range domain :math:`k_x \ge 0` is
+  :math:`\cos\varphi \ge 0` in polar coordinates,
+* the normalized spectrum has unit mass over that one-sided annulus (cells
+  outside :math:`A` stay in the mass and are excluded from the integral by the
+  kernel's mask, exactly as in the cartesian path).
+
+The OCN product's :math:`\varphi = 0` is the **range** direction
+(:math:`k_x = k\cos\varphi`), the same convention as
+:func:`cwaves.client.polar_to_cartesian`. On the real S1A WV1 OCN asset the
+polar-direct path and the cartesian (128 x 128) path agree within 9.3 %
+relative on every parameter of magnitude above 5 (see
+:ref:`polar-direct-certification`);
+the residual is the quadrature error of the product's own coarse 72 x 60
+polar grid, shared by both paths.

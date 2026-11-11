@@ -38,6 +38,34 @@ As in the 2007 paper, the input must be a **one-sided (half)** cross-spectrum :
 See :ref:`theory` and ``repository_specifications.md`` (section 6) for the full
 rationale.
 
+Polar input (no resampling)
+---------------------------
+
+A spectrum natively sampled on a polar wavenumber grid (e.g. the ESA OCN WV
+product's ``oswPolSpec`` : log-spaced wavenumber magnitude x uniform angle) can
+be fed **directly** to :func:`cwaves.compute_cwave_parameters_polar`, without
+any resampling to a cartesian grid :
+
+.. code-block:: python
+
+    import numpy as np
+    import xarray as xr
+    import cwaves
+
+    with xr.open_dataset("s1a-wv1-ocn-vv.nc") as ds:
+        spec = ds["oswPolSpec"].isel(oswAzSize=0, oswRaSize=0)  # (phi, k)
+        k = ds["oswK"].values                  # rad/m, strictly increasing
+        phi = np.deg2rad(ds["oswPhi"].values)  # radians, full 2*pi circle
+
+    cwave_params = cwaves.compute_cwave_parameters_polar(
+        spec, k, phi, cwave_wlmax=600, cwave_wlmin=25, cwave_Nk=4, cwave_Nphi=5
+    )
+
+The same ``cwave_*`` parameters as the cartesian path are accepted. See
+:ref:`theory` (direct polar-grid computation) for the quadrature details and
+:ref:`polar-direct-certification` for the agreement with the cartesian path on
+the real S1A WV1 asset.
+
 Parameters
 ----------
 
@@ -85,12 +113,16 @@ Two mutually-exclusive inputs :
 * ``--input-nc-l1b`` : SARWave L1B XSP cross-spectrum product (primary, no
   ``s1_int2.xml``). One CWAVE parameter set per time slice.
 * ``--input-nc-osw`` : ESA OCN WV Sentinel-1 measurement file (the polar
-  ``oswPolSpec`` is resampled to a cartesian cross-spectrum).
+  ``oswPolSpec`` is resampled to a cartesian cross-spectrum via
+  ``--n-range`` / ``--n-azimuth``, or computed **directly on the native polar
+  grid** with ``--polar-direct``, no resampling).
 
 .. code-block:: bash
 
    cwaves-osw --input-nc-l1b l1b-s1b-iw2-xsp.nc --lag 2 --pol 0
    cwaves-osw --input-nc-osw s1d-wv1-ocn-vv.nc --output-nc cwave.nc
+   # same OCN input, computed directly on the polar grid (no resampling)
+   cwaves-osw --input-nc-osw s1d-wv1-ocn-vv.nc --polar-direct --output-nc cwave.nc
 
 ``cwaves-kernels`` : render the kernel basis
 +++++++++++++++++++++++++++++++++++++++++++++

@@ -407,3 +407,91 @@ error to the theoretical quadrature error** : the idempotence error must halve
 (or better) per grid doubling on full-domain grids (ratio <= 0.75 per
 doubling), which is the discrete signature of a consistent first-order
 quadrature of the exact continuum basis verified in this section.
+
+## 8. Polar-grid computation contract (verified 2026-11-11)
+
+`compute_cwave_parameters_polar` (library) and `compute_cwaves_from_osw_polar`
+/ the CLI flag `--polar-direct` (client) compute the CWAVE parameters directly
+on a polar `(k, phi)` wavenumber grid — the OCN WV product's native
+`oswPolSpec` (log-spaced `oswK` x uniform `oswPhi`) — **without resampling to a
+cartesian grid**. The default OCN path (`--input-nc-osw` without
+`--polar-direct`) still goes through `polar_to_cartesian` ; its behaviour is
+unchanged.
+
+### 8.1 Same projection, polar quadrature
+
+The projection is the same 2-D integral as section 6 :
+
+```
+P_{n,m} = integral K_{n,m}(kx, ky) * |X_S|_norm dA
+         over R = A  intersect  { kmin < sqrt(kx^2 + ky^2) < kmax }  intersect  { kx >= 0 }
+```
+
+In polar coordinates `kx = k cos(phi)`, `ky = k sin(phi)` (the OCN
+`oswPhi = 0` is the **range** direction, the same convention as
+`polar_to_cartesian` : `phi_query = arctan2(k_az, k_rg)`):
+
+- the circular annulus `kmin < sqrt(kx^2 + ky^2) < kmax` is exactly
+  `kmin < k < kmax` (the radial sample is the cell centre),
+- the one-sided half `kx >= 0` is `cos(phi) >= 0`, tested with a `-1e-6`
+  tolerance so that the `kx = 0` boundary cells are kept despite the ~1e-8 rad
+  floating-point noise of the product's `oswPhi` grid (the nearest interior
+  cell has `|cos| >= sin(5 deg) = 0.087`, so the tolerance cannot leak),
+- the area element is `dA = k dk dphi` and the per-cell weight is
+  `w_ij = w^k_i * w^phi_j` :
+  - `w^k_i = (k_{i+1/2}^2 - k_{i-1/2}^2) / 2` with cell boundaries at the
+    geometric mean of adjacent samples (exact for the OCN log-spaced grid,
+    where the samples are the cell centres in log-space) and the two outer
+    boundaries extrapolated by half of the adjacent log step,
+  - `w^phi_j` : periodic cell widths (the constant `2*pi/n` for the OCN
+    uniform grid).
+
+### 8.2 Same input contract as the cartesian path
+
+- only the real, non-negative modulus `|spec|` is used (complex phase
+  discarded),
+- the unit-mass normalisation is over (one-sided half) intersect (annulus)
+  intersect (non-NaN spectrum) : cells outside the elliptic domain `A` stay in
+  the mass and are excluded from the integral by the kernel's NaN mask —
+  exactly as in the cartesian path, where the kernel's NaN is applied only at
+  the final `skipna` sum,
+- `compute_kernel` is evaluated at the 2-D `(kx, ky)` fields (it returns NaN
+  outside `A` via `nu(alpha_k) = sqrt(1 - alpha_k^2)`).
+
+Validation (ValueError) : `spec` must be 2-D of shape `(len(phi), len(k))`,
+`k` strictly positive and strictly increasing (>= 2 samples), `phi` strictly
+increasing with span < 2*pi (>= 2 samples), and the masked spectrum must carry
+a positive finite mass on the one-sided annulus.
+
+### 8.3 Measured agreement (S1A WV1 OCN asset, 2026-11-11)
+
+- polar-direct (native 72 x 60) vs cartesian (128 x 128) : all 20 default
+  parameters agree within `|diff| <= 0.5 + 20% * |cartesian|` (the unit-test
+  tolerance) ; largest absolute difference 0.73 (`k_gp=1, phi_hf=5`, value
+  -8.43), largest relative difference 49 % (the smallest-magnitude parameter,
+  `k_gp=4, phi_hf=3`, value -0.88) ; every parameter of magnitude above 5
+  agrees within 9.3 % relative.
+- the cartesian path converges toward a fine-grid polar reference (720 x 512,
+  the native spectrum interpolated in (ln k, phi)) as the resampling grid is
+  refined : rms relative difference 38 % (32 x 64) -> 10 % (128 x 128) ->
+  3 % (512 x 1024). The native polar quadrature is in the same range
+  (rms 13 %) : the residual is the product's own 72 x 60 sampling error,
+  shared by both paths. The polar path integrates the product's samples as
+  exact polar bins (no interpolation step), whereas every cartesian path
+  first interpolates the same 4320 samples.
+- on a smooth synthetic spectrum (directional Gaussian), polar 300 x 360 vs
+  cartesian 400 x 800 agree to max relative 7.5 % (on near-zero parameters
+  only) ; unit-test tolerance `rtol = 0.10, atol = 0.01`.
+- kernel orthonormality on the polar grid : the Gram matrix of the
+  paper-parameter kernels (3 x 3) on a polar log grid has off-diagonal entries
+  below 5 % of the mean diagonal (`tests/test_compute_cwave_polar.py::
+  test_polar_kernel_orthonormality`).
+
+### 8.4 API conservatism
+
+Purely additive (section 1.2) : no existing signature was touched. New public
+symbols : `cwaves.compute_cwave_parameters_polar`,
+`cwaves.compute_cwaves_from_osw_polar` (exported in `cwaves/__init__.py`);
+new private helpers `_polar_k_weights`, `_polar_phi_weights` in
+`cwaves/compute_cwaves.py`; new CLI flag `--polar-direct` on the
+`--input-nc-osw` path of `cwaves-osw`.

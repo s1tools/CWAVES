@@ -23,6 +23,11 @@ This produces, in ``docs/figures/`` :
   basis sizes (Nk x Nphi = 4x5, 8x8, 16x16, 32x30); each row pairs the
   original normalized ``|X_S|`` (left) with the recomposition (right) and
   annotates the relative L2 error, showing the convergence of the round trip.
+* ``certification_ocn_polar_direct.png`` -- the direct polar-grid
+  certification : the CWAVE projection integrated **directly on the OCN WV
+  product's native polar grid** (72 x 60, no cartesian resampling) : the
+  modulus ``|X_S|``, the (1, 1) kernel and the pointwise integrand on that
+  grid, plus the 20-parameter agreement with the cartesian (128 x 128) path.
 * the SAR ``sigma0`` roughness image (``...-roughness.png``) is provided
   separately (not generated here) and is documented on the certification page.
 * ``cwave_map_k1_phi1.png``          -- the georeferenced CWAVE map (k_gp=1,
@@ -51,7 +56,10 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from cwaves.client import _l1b_cross_spectrum, polar_to_cartesian  # noqa: E402
 from cwaves.compute_cwaves import (  # noqa: E402
+    _polar_k_weights,
+    _polar_phi_weights,
     compute_cwave_parameters,
+    compute_cwave_parameters_polar,
     compute_kernel,
 )
 from cwaves.config import get_default_config  # noqa: E402
@@ -601,12 +609,141 @@ def _gen_roundtrip() -> None:
     plt.close(fig)
 
 
+def _gen_certification_polar_direct() -> None:
+    """Render the direct polar-grid (no resampling) certification figure.
+
+    Four panels on the OCN WV product's **native polar grid** (72 x 60, the
+    same S1A WV1 acquisition as the other certification figures) : the
+    modulus ``|X_S|`` on the one-sided half (:math:`k_x >= 0`), the same grid
+    with the (k_gp=1, phi_hf=1) kernel evaluated on it, the pointwise
+    integrand ``kernel x |X_S|_norm`` (summed over the polar cells to yield
+    the CWAVE parameter), and the 20-parameter agreement between the direct
+    polar path (:func:`cwaves.compute_cwave_parameters_polar`) and the
+    cartesian (128 x 128) path.
+    """
+    cfg = get_default_config()["cwave"]
+    wlmax, wlmin = cfg["cwave_wlmax"], cfg["cwave_wlmin"]
+    n_k, n_phi = cfg["cwave_Nk"], cfg["cwave_Nphi"]
+    kmin_ = kmin(wlmax, wlmin)
+    kmax = 2.0 * np.pi / wlmin
+    n_grid = 128
+
+    with xr.open_dataset(OCN_WV_NC) as ds:
+        pol = ds["oswPolSpec"].isel(oswAzSize=0, oswRaSize=0).values  # (phi, k)
+        k = np.asarray(ds["oswK"].values)  # (k,) rad/m
+        phi = np.deg2rad(np.asarray(ds["oswPhi"].values))  # (phi,) radians
+        xs_cart = polar_to_cartesian(ds, n_range=n_grid, n_azimuth=n_grid)
+
+    # the two paths being compared
+    cp_pol = compute_cwave_parameters_polar(
+        pol,
+        k,
+        phi,
+        cwave_wlmax=wlmax,
+        cwave_wlmin=wlmin,
+        cwave_Nk=n_k,
+        cwave_Nphi=n_phi,
+    )
+    cp_cart = compute_cwave_parameters(xs_cart, **cfg)
+
+    # panel arrays, exactly mirroring compute_cwave_parameters_polar
+    spec_abs = np.abs(pol)
+    one_sided = np.cos(phi) >= -1.0e-6
+    ann = (k > kmin_) & (k < kmax)
+    w = _polar_phi_weights(phi)[:, None] * _polar_k_weights(k)[None, :]
+    mask = one_sided[:, None] & ann[None, :] & ~np.isnan(spec_abs)
+    mass = float(np.nansum(np.where(mask, spec_abs * w, np.nan)))
+    spec_norm = np.where(mask, spec_abs * w / mass, np.nan)
+    kx = k[None, :] * np.cos(phi)[:, None]
+    ky = k[None, :] * np.sin(phi)[:, None]
+    krg = xr.DataArray(kx, dims=("phi", "k"), coords={"phi": phi, "k": k})
+    kaz = xr.DataArray(ky, dims=("phi", "k"), coords={"phi": phi, "k": k})
+    with np.errstate(invalid="ignore"):
+        kernel = compute_kernel(
+            krg=krg, kaz=kaz, kmin=kmin_, kmax=kmax, cwave_Nk=n_k, cwave_Nphi=n_phi
+        )
+    k11 = kernel["cwave_kernel"].sel(k_gp=1, phi_hf=1).values  # (phi, k)
+    integrand = k11 * spec_norm
+    cwave_val = float(np.nansum(integrand))
+
+    # display the one-sided half (kx >= 0) as phi in [-90, +90] degrees
+    # (0 = range direction, the OCN oswPhi = 0 convention)
+    rows = np.where(one_sided)[0]
+    phi_disp = np.degrees(np.arctan2(np.sin(phi[rows]), np.cos(phi[rows])))
+    order = np.argsort(phi_disp)
+    phi_disp = phi_disp[order]
+    spec_disp = spec_abs[rows[order], :]
+    k11_disp = k11[rows[order], :]
+    int_disp = integrand[rows[order], :]
+
+    _apply_style()
+    fig, axes = plt.subplots(1, 4, figsize=(22.0, 5.4), constrained_layout=True)
+
+    pcm = axes[0].pcolormesh(k, phi_disp, spec_disp, cmap=CWMAP, shading="auto")
+    axes[0].set_title(r"polar  $|X_S|$  (native grid)")
+    fig.colorbar(pcm, ax=axes[0], label=r"$|X_S|$  (a.u.)")
+
+    vmax_k = float(np.nanpercentile(np.abs(k11_disp), 95))
+    pcm = axes[1].pcolormesh(
+        k,
+        phi_disp,
+        k11_disp,
+        cmap="bwr",
+        shading="auto",
+        norm=mcolors.TwoSlopeNorm(vmin=-vmax_k, vcenter=0.0, vmax=vmax_k),
+    )
+    axes[1].set_title(r"CWAVE kernel  $(k_{gp}=1,\ \varphi_{hf}=1)$")
+    fig.colorbar(pcm, ax=axes[1], label=r"kernel  (a.u.)")
+
+    vmax_i = float(np.nanpercentile(np.abs(int_disp), 95))
+    pcm = axes[2].pcolormesh(
+        k,
+        phi_disp,
+        int_disp,
+        cmap="bwr",
+        shading="auto",
+        norm=mcolors.TwoSlopeNorm(vmin=-vmax_i, vcenter=0.0, vmax=vmax_i),
+    )
+    axes[2].set_title(
+        r"integrand  kernel $\times\, |X_S|_{\rm norm}$"
+        r"   $\ \sum \Rightarrow$  CWAVE $= $" + f"{cwave_val:.2f}"
+    )
+    fig.colorbar(pcm, ax=axes[2], label=r"kernel $\times\, |X_S|_{\rm norm}$  (a.u.)")
+
+    ax = axes[3]
+    ax.scatter(cp_cart.values, cp_pol.values, s=40, color="tab:blue", zorder=3)
+    lim = 1.05 * float(np.max(np.abs(np.concatenate([cp_cart.values, cp_pol.values]))))
+    ax.plot([-lim, lim], [-lim, lim], "k--", lw=1.0)
+    diff = np.abs(cp_pol.values - cp_cart.values)
+    rel = diff / np.maximum(np.abs(cp_cart.values), 1e-12)
+    ax.set_title(
+        rf"polar-direct vs cartesian {n_grid} x {n_grid}  (20 params)"
+        f"\nmax |diff| = {diff.max():.2f}   max rel. = {rel.max():.0%}"
+    )
+    ax.set_xlabel(r"CWAVE  (cartesian 128 x 128)")
+    ax.set_ylabel(r"CWAVE  (polar-direct)")
+
+    for i in range(3):
+        axes[i].set_xlim(0.0, kmax)
+        axes[i].set_ylim(-95.0, 95.0)
+        axes[i].set_xlabel(r"$k$  [rad m$^{-1}$]")
+        axes[i].set_ylabel(r"$\varphi$  [deg]  (0 = range)")
+    fig.suptitle(
+        "OCN WV  polar-direct (no cartesian resampling)  --  native 72 x 60 "
+        "polar grid  (S1A WV1, 2025-05-01, orbit 058996_075117)",
+        fontsize=14,
+    )
+    fig.savefig(FIG_DIR / "certification_ocn_polar_direct.png", bbox_inches="tight")
+    plt.close(fig)
+
+
 def main() -> None:
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     _gen_kernels()
     _gen_certification()
     _gen_certification_all()
     _gen_roundtrip()
+    _gen_certification_polar_direct()
     for f in sorted(FIG_DIR.glob("*.png")):
         print(f"wrote {f} ({f.stat().st_size} bytes)")
 
