@@ -178,17 +178,12 @@ Case study: Galicia -> Ireland (15 S1B IW XSP products)
 
 The tool :mod:`cwaves.scripts.cwave_listing_compare`
 (console script ``cwaves-listing-compare``) maps the CWAVE parameters of a
-**listing** of SARWAVE L1B IW XSP products and compares them, parameter by
-parameter, with the CWAVE parameters already embedded in the product by the
-**historical** ``xsar_slc`` pipeline (variable ``cwave_params``, computed in a
-different way : symmetrized spectrum, different normalisation). For the
-Galicia -> Ireland case-study of 2021-02-27 18h (15 S1B IW XSP SAFEs, intraburst,
-lag 2, VV, 1558 tiles) it produced one georeferenced map and one
-library-vs-``xsar_slc`` scatter per CWAVE parameter (20 of each). Five
-representative parameters are shown below : for each, the georeferenced map of
-the library values (all three subswaths ``iw1``/``iw2``/``iw3`` colocated in
-geographic space, colour = subswath) and the old-vs-new scatter (one point per
-tile, 1:1 line).
+**listing** of SARWAVE L1B IW XSP products. For the Galicia -> Ireland
+case-study of 2021-02-27 18h (15 S1B IW XSP SAFEs, intraburst, lag 2, VV,
+1558 tiles) it produced one georeferenced map per CWAVE parameter (20 maps) of
+the *library* values. Five representative parameters are shown below : the
+georeferenced map of the library values (all three subswaths ``iw1``/``iw2``/
+``iw3`` colocated in geographic space, colour = subswath).
 
 .. figure:: figures/case_galicia_map_k1_phi1.png
    :align: center
@@ -197,23 +192,11 @@ tile, 1:1 line).
    Georeferenced CWAVE map (:math:`k_{gp}=1`, :math:`\varphi_{hf}=1`) of the
    library values over the 15 SAFEs.
 
-.. figure:: figures/case_galicia_compare_k1_phi1.png
-   :align: center
-   :width: 45%
-
-   Library vs ``xsar_slc`` CWAVE (:math:`k_{gp}=1`, :math:`\varphi_{hf}=1`).
-
 .. figure:: figures/case_galicia_map_k2_phi2.png
    :align: center
    :width: 100%
 
    Georeferenced CWAVE map (:math:`k_{gp}=2`, :math:`\varphi_{hf}=2`).
-
-.. figure:: figures/case_galicia_compare_k2_phi2.png
-   :align: center
-   :width: 45%
-
-   Library vs ``xsar_slc`` CWAVE (:math:`k_{gp}=2`, :math:`\varphi_{hf}=2`).
 
 .. figure:: figures/case_galicia_map_k2_phi5.png
    :align: center
@@ -221,23 +204,11 @@ tile, 1:1 line).
 
    Georeferenced CWAVE map (:math:`k_{gp}=2`, :math:`\varphi_{hf}=5`).
 
-.. figure:: figures/case_galicia_compare_k2_phi5.png
-   :align: center
-   :width: 45%
-
-   Library vs ``xsar_slc`` CWAVE (:math:`k_{gp}=2`, :math:`\varphi_{hf}=5`).
-
 .. figure:: figures/case_galicia_map_k4_phi2.png
    :align: center
    :width: 100%
 
    Georeferenced CWAVE map (:math:`k_{gp}=4`, :math:`\varphi_{hf}=2`).
-
-.. figure:: figures/case_galicia_compare_k4_phi2.png
-   :align: center
-   :width: 45%
-
-   Library vs ``xsar_slc`` CWAVE (:math:`k_{gp}=4`, :math:`\varphi_{hf}=2`).
 
 .. figure:: figures/case_galicia_map_k4_phi5.png
    :align: center
@@ -245,16 +216,21 @@ tile, 1:1 line).
 
    Georeferenced CWAVE map (:math:`k_{gp}=4`, :math:`\varphi_{hf}=5`).
 
-.. figure:: figures/case_galicia_compare_k4_phi5.png
-   :align: center
-   :width: 45%
+Comparison with the historical ``xsar_slc`` pipeline
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   Library vs ``xsar_slc`` CWAVE (:math:`k_{gp}=4`, :math:`\varphi_{hf}=5`).
-
-The two implementations agree very closely: for every parameter the Pearson
-correlation is :math:`r \ge 0.999` and the mean library-minus-``xsar_slc`` bias
-is small (well below the inter-tile variability), confirming the library is
-consistent with the historical pipeline.
+The same tool also compares, parameter by parameter, the library values with
+the CWAVE parameters already embedded in the product by the **historical**
+``xsar_slc`` pipeline (variable ``cwave_params``, computed in a different way :
+symmetrized spectrum, different normalisation). The two implementations agree
+very closely : for every parameter the Pearson correlation is
+:math:`r \ge 0.999` and the mean library-minus-``xsar_slc`` bias is small (well
+below the inter-tile variability), confirming the library is consistent with
+the historical pipeline. The detailed parameter-by-parameter comparisons
+(scatter plots, one point per tile, and per-parameter statistics) are intended
+for developers and are kept out of this documentation : see the
+`cwaves-listing-compare developer report
+<https://cerweb.ifremer.fr/datarmor/dev_reports/html/libs/agrouaze/cwaves/>`_.
 
 Reproducing the figures
 -----------------------
@@ -280,7 +256,9 @@ listing of SARWAVE XSP products (the georeferenced maps need ``cartopy``, the
        --output-dir <out_dir> \
        --cases 1,1;2,2;2,5;4,2;4,5
 
-Without ``--cases`` it renders the full 4 x 5 = 20 parameters. For every case it
-writes one ``cwave_map_k{kg}_phi{ph}.png`` (georeferenced map, library values)
-and one ``compare_cwave_k{kg}_phi{ph}.png`` (library vs ``xsar_slc`` scatter),
-plus a ``compare_summary.txt`` (n, Pearson r, mean bias, std).
+Without ``--cases`` it renders the full 4 x 5 = 20 parameters. For every case
+it writes one ``cwave_map_k{kg}_phi{ph}.png`` (georeferenced map, library
+values — the figures shown above), one ``compare_cwave_k{kg}_phi{ph}.png``
+(library vs ``xsar_slc`` scatter, one point per tile) and a
+``compare_summary.txt`` (n, Pearson r, mean bias, std); the scatters and the
+statistics feed the developer report linked above.
