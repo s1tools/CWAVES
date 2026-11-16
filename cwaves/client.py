@@ -71,7 +71,7 @@ def _root_content(input_nc: str | os.PathLike[str]) -> tuple[set[str], list[str]
         return variables, groups
     except OSError:
         with xr.open_dataset(input_nc) as ds:
-            return set(ds.variables), []
+            return {str(v) for v in ds.variables}, []
 
 
 def detect_schema(input_nc: str | os.PathLike[str]) -> str:
