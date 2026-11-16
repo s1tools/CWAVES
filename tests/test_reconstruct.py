@@ -3,7 +3,6 @@
 import numpy as np
 import pytest
 import xarray as xr
-
 from cwaves import compute_cwaves, reconstruct_spectrum
 
 KMAX = 2 * np.pi / 25
@@ -30,12 +29,12 @@ def _truth_error(spec: xr.DataArray, rec: xr.DataArray) -> float:
     from cwaves.grid import build_quadrature
 
     quad = build_quadrature(spec)
-    kn = quad.k_norm
+    kn = np.asarray(quad.k_norm.transpose(*spec.dims))
     mask = (kn > 2 * np.pi / 600) & (kn < KMAX)
-    mass = float((np.abs(spec) * quad.weight).where(mask).sum())
+    w = np.asarray(quad.weight.transpose(*spec.dims))
+    mass = float((np.abs(spec.values) * w)[mask].sum())
     gt = (spec / mass).values
     dom = rec.values != 0
-    w = quad.weight.transpose(*spec.dims).values
     err = (((rec.values - gt) ** 2) * w)[dom].sum()
     return float(np.sqrt(err / ((gt**2) * w)[dom].sum()))
 
@@ -95,7 +94,7 @@ def test_errors():
     spec = _spectrum()
     c = compute_cwaves(spec)
     with pytest.raises(ValueError, match="method"):
-        reconstruct_spectrum(c, spec, method="ot")
+        reconstruct_spectrum(c, spec, method="transport")
     ci = compute_cwaves(spec * 1j, part="imag")
     with pytest.raises(ValueError, match="positive density"):
         reconstruct_spectrum(ci, spec, method="mem")

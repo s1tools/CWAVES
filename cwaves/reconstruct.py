@@ -108,7 +108,8 @@ def _mem_dual(
         return float((weight * g_).sum() - lam_ @ coeffs + 0.5 * reg * lam_ @ lam_)
 
     it = 0
-    for it in range(1, max_iter + 1):
+    while it < max_iter:
+        it += 1
         g = prior * np.exp(lam @ kernel)
         grad = kernel @ (g * weight) - coeffs + reg * lam
         if np.abs(grad).max() < tol:
@@ -221,9 +222,7 @@ def reconstruct_spectrum(
         im, _, _ = solve(coeffs.imag, "odd")
         values: np.ndarray = re + 1j * im
     else:
-        values, quad, info = solve(
-            np.real(coeffs), "odd" if part == "imag" else "even"
-        )
+        values, quad, info = solve(np.real(coeffs), "odd" if part == "imag" else "even")
     shape = [grid.sizes[d] for d in quad.dims]
     out = xr.DataArray(
         values.reshape(shape), dims=quad.dims, coords=grid.coords
