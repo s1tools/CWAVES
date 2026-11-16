@@ -1280,9 +1280,10 @@ def test_sweep_product_kernel_domain(tmp_path):
     with xr.open_dataset(nc) as ds:
         xs = _load_cross_spectrum(ds, lag=2, kmax=KMAX)
     f = _normalized_density(xs, KMIN, KMAX)
+    # mid-point refinement: 2n - 1 nodes per axis
     assert prod["gram_grid"] == (
-        2 * int(f.sizes["freq_line"]),
-        2 * int(f.sizes["freq_sample"]),
+        2 * int(f.sizes["freq_line"]) - 1,
+        2 * int(f.sizes["freq_sample"]) - 1,
     )
     assert np.isfinite(prod["gram_diag"])
     assert np.isfinite(prod["gram_off"])
