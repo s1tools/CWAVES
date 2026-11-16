@@ -360,8 +360,11 @@ misleading entry points):
   **cwave)`, and one CLI, `cwaves --input-nc <file>` (`--lag`, `--pol`,
   `--part`, `--cwave-*`, `--output-nc`). The schema is detected from the
   variables of the file, never from its name: `xspectra_{lag}tau_Re/Im` on
-  `k_rg`/`k_az` -> one parameter set per `time`; `oswPolSpec` on
-  `oswK`/`oswPhi` (degrees converted) -> native polar grid. Files whose spectra
+  `k_rg`/`k_az` -> one parameter set per `time`; OCN WV files -> by default
+  the cross-spectrum `oswCartSpec` on its native sinh grid
+  (`ocn_cartesian_spectrum`, section 8.1), or `oswPolSpec` on `oswK`/`oswPhi`
+  (degrees converted, native polar grid) with `ocn_spectrum="polar"` /
+  `--ocn-spectrum polar`. Files whose spectra
   are stored in NetCDF groups (tiled IW products) are rejected with a pointer
   to `cwaves.scripts.iw_cwaves_map`, which processes them tile by tile on the
   native (sinh or uniform) grid; its output size follows `cwave_Nk x
@@ -374,8 +377,32 @@ misleading entry points):
   `--input-nc-osw / --input-nc-l1b / --polar-direct / --n-range /
   --n-azimuth`, and `--n-grid` of the IW script.
 - The IFREMER sinh -> linear decompressor (`cwaves/scripts/ocn_sinh.py`) is
-  kept only as a tool of the certification report; it is not needed to compute
-  CWAVE parameters.
+  **removed** (2026-11-16, issue #12): see section 8.1.
+
+### 8.1 OCN WV cartesian grid: calibration (issue #12, 2026-11-16)
+
+The OCN WV `oswCartSpecRe/Im` (half plane) is stored on a sinh grid whose axes
+`oswKx` / `oswKy` (unit `m/m`) are normalised wavenumbers. Checked on 1800
+S1A/S1C/S1D WV products (`tmp_data/cwave_s8/`):
+
+- the axes follow exactly `K = a * 32 * sinh(kappa / 32)` (residual 3e-8;
+  growth 1/32) and `oswJx` / `oswJy` are exactly `dK/dkappa`;
+- `oswKx / oswGroundRngSize` and `oswKy / oswAziSize` give a central step equal
+  to `2 pi / (1024 * ground pixel)` on both axes (ratio 1.00000), i.e. `m/m` =
+  rad/m x estimation-area size (no 2 pi factor: rejected by the data).
+
+The library reads the spectrum on that native grid
+(`cwaves.client.ocn_cartesian_spectrum`) and integrates with exact cell areas.
+The removed decompressor had four defects: hard-coded growth 1/30.1 (k too
+large, up to ~+9 % at 2 pi/25 m), range scale from `owiIncidenceAngle[0]`
+instead of `oswIncidenceAngle` (-2.8 %), azimuth scale averaged with the wrong
+growth (-4.5 %), and a 256-point linear grid that cuts the CWAVE domain
+(|k| <~ 0.21 / 0.19 rad/m < kmax). Once corrected (growth 1/32, product scale,
+600 points) it reproduces the native-grid parameters to 0.1-0.7 % (~2 % in a
+few cases, sinc interpolation), so decompression brings nothing.
+OCN **IW** groups store physical axes (no area size); the IW script assumes
+cycles/m (x 2 pi); a peak-wavelength check (median 133 m vs 838 m in rad/m)
+supports it but is not conclusive (open point in issue #12).
 
 ## 9. Complex extension: odd harmonics (2026-11-16)
 

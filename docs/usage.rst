@@ -30,8 +30,8 @@ Supported inputs
      - examples
    * - cartesian, uniform or not
      - ``k_rg`` (range), ``k_az`` (azimuth), rad/m
-     - SARWave L1B XSP (FFT grid), OCN ``oswCartSpec`` (sinh grid, convert
-       cycles/m to rad/m)
+     - SARWave L1B XSP (FFT grid), OCN WV ``oswCartSpec`` (sinh grid,
+       :func:`cwaves.client.ocn_cartesian_spectrum`), OCN IW tiles (sinh grid)
    * - polar, linear or log ``k``
      - ``k`` (rad/m), ``phi`` (**radians**, ``k_rg = k cos(phi)``)
      - OCN ``oswPolSpec`` (convert ``oswPhi`` from degrees), model spectra
@@ -145,7 +145,12 @@ file (never from its name):
 
 * ``xspectra_{lag}tau_Re/Im`` on ``k_rg``/``k_az`` (e.g. SARWave L1B XSP WV):
   one parameter set per ``time`` slice (``--lag``, ``--pol``);
-* ``oswPolSpec`` on ``oswK``/``oswPhi`` (e.g. ESA OCN WV): native polar grid.
+* ESA OCN WV (``oswCartSpec`` and ``oswPolSpec``): by default the SAR
+  cross-spectrum ``oswCartSpec`` (``--lag`` = ``oswLag`` index) on its native
+  sinh grid -- the normalised ``m/m`` axes divided by the estimation-area sizes
+  ``oswGroundRngSize`` / ``oswAziSize`` give rad/m (checked against the SAR
+  geometry on 1800 products, issue #12); ``--ocn-spectrum polar`` uses the
+  inverted wave spectrum ``oswPolSpec`` on its native polar grid.
 
 Tiled products whose spectra live in NetCDF groups (IW ``intraburst`` /
 ``interburst``) are rejected with a pointer to the IW map script below.
@@ -154,6 +159,7 @@ Tiled products whose spectra live in NetCDF groups (IW ``intraburst`` /
 
    cwaves --input-nc s1a_wv1_xsp.nc --lag 2 --pol 0 --output-nc cwave.nc
    cwaves --input-nc s1a-wv1-ocn-vv.nc --cwave-nk 8 --cwave-nphi 9
+   cwaves --input-nc s1a-wv1-ocn-vv.nc --ocn-spectrum polar
    # complex CWAVE (written as cwave_params_re / cwave_params_im)
    cwaves --input-nc s1a_wv1_xsp.nc --part complex --output-nc cwave_c.nc
 

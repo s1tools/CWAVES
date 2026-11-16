@@ -42,7 +42,12 @@ DEFAULT_LAG = 2
 SCHEMAS = {
     "xsp": "cross-spectrum xspectra_{lag}tau_Re/Im on (k_rg, k_az) [rad/m]",
     "polar": "polar spectrum oswPolSpec on (oswK [rad/m], oswPhi [deg])",
+    "ocn_cartesian": "OCN WV cross-spectrum oswCartSpecRe/Im on its native sinh "
+    "grid (oswKx / oswGroundRngSize, oswKy / oswAziSize [rad/m])",
 }
+
+#: spectrum used for an OCN WV file (both are stored in the product)
+OCN_SPECTRA = ("cartesian", "polar")
 
 
 def _setup_logging() -> None:
@@ -147,10 +152,71 @@ def polar_spectrum(ds: xr.Dataset, iaz: int = 0, ira: int = 0) -> xr.DataArray:
     )
 
 
+def ocn_cartesian_spectrum(
+    ds: xr.Dataset, lag: int = DEFAULT_LAG, iaz: int = 0, ira: int = 0
+) -> xr.DataArray:
+    """OCN WV cartesian cross-spectrum on its native sinh grid, in rad/m.
+
+    The ESA OCN WV product stores ``oswCartSpecRe/Im`` (half plane,
+    ``k_rg >= 0``) on a sinh-spaced grid whose axes ``oswKx`` / ``oswKy`` are
+    **normalised wavenumbers** (unit ``m/m``: wavenumber in rad/m times the
+    size of the estimation area). The physical wavenumbers are therefore
+    ``oswKx / oswGroundRngSize`` and ``oswKy / oswAziSize``. Checked on 1800
+    S1A/S1C/S1D WV products (issue #12): the axes follow exactly
+    ``a * 32 * sinh(kappa / 32)`` (``oswJx`` / ``oswJy`` are their exact
+    derivatives) and the central step equals ``2 pi / (1024 * ground pixel)``
+    on both axes. No decompression / resampling is performed:
+    :func:`cwaves.compute_cwaves` integrates on the sinh grid with exact cell
+    areas.
+
+    Args:
+        ds: an opened OCN WV measurement dataset.
+        lag: ``oswLag`` index (default 2).
+        iaz: ``oswAzSize`` index of the cell.
+        ira: ``oswRaSize`` index of the cell.
+
+    Returns:
+        The complex cross-spectrum ``real + 1j * imag``, dims
+        ``(freq_line, freq_sample)`` with ``k_az`` / ``k_rg`` in rad/m.
+
+    Raises:
+        ValueError: if the product has no area sizes (e.g. OCN IW groups,
+            whose axes are already physical: use the IW map script) or the
+            spectrum is not finite.
+    """
+    for var in ("oswCartSpecRe", "oswCartSpecIm", "oswGroundRngSize", "oswAziSize"):
+        if var not in ds:
+            raise ValueError(
+                f"{var} not found: not an OCN WV measurement file (OCN IW tiles: "
+                "use python -m cwaves.scripts.iw_cwaves_map)"
+            )
+    cell = {"oswAzSize": iaz, "oswRaSize": ira}
+    real = ds["oswCartSpecRe"].isel(cell)
+    imag = ds["oswCartSpecIm"].isel(cell)
+    if "oswLag" in real.dims:
+        real = real.isel(oswLag=lag)
+        imag = imag.isel(oswLag=lag)
+    real = real.transpose("oswKyBinSize", "oswKxBinSize")
+    imag = imag.transpose("oswKyBinSize", "oswKxBinSize")
+    if not (np.isfinite(real).all() and np.isfinite(imag).all()):
+        raise ValueError("oswCartSpec contains NaN/inf (check the cell index)")
+    size_rg = float(ds["oswGroundRngSize"].isel(cell))
+    size_az = float(ds["oswAziSize"].isel(cell))
+    k_rg = np.asarray(ds["oswKx"].values, dtype=float) / size_rg
+    k_az = np.asarray(ds["oswKy"].values, dtype=float) / size_az
+    return xr.DataArray(
+        real.values + 1j * imag.values,
+        dims=("freq_line", "freq_sample"),
+        coords={"k_az": ("freq_line", k_az), "k_rg": ("freq_sample", k_rg)},
+        name=f"oswCartSpec_lag{lag}",
+    )
+
+
 def compute_cwaves_from_file(
     input_nc: str | os.PathLike[str],
     lag: int = DEFAULT_LAG,
     pol: int = 0,
+    ocn_spectrum: str = "cartesian",
     **cwave: Any,
 ) -> xr.DataArray:
     """Compute the CWAVE parameters of the spectrum (spectra) stored in a file.
@@ -160,8 +226,13 @@ def compute_cwaves_from_file(
 
     Args:
         input_nc: path to the NetCDF file.
-        lag: cross-spectrum lag for the ``"xsp"`` schema (default 2 = 2-tau).
+        lag: cross-spectrum lag for the ``"xsp"`` schema (default 2 = 2-tau)
+            and ``oswLag`` index of the OCN WV cartesian cross-spectrum.
         pol: polarization index for the ``"xsp"`` schema (default 0).
+        ocn_spectrum: for an OCN WV file, ``"cartesian"`` (default: the SAR
+            cross-spectrum ``oswCartSpec`` on its native sinh grid, see
+            :func:`ocn_cartesian_spectrum`) or ``"polar"`` (the inverted wave
+            spectrum ``oswPolSpec``).
         **cwave: ``cwave_*`` parameters (defaults: packaged
             ``default_config.yml``).
 
@@ -169,12 +240,18 @@ def compute_cwaves_from_file(
         The CWAVE parameters (``k_gp`` x ``phi_hf``, plus ``time`` for
         ``"xsp"`` files). The ``schema`` attribute records the detected schema.
     """
+    if ocn_spectrum not in OCN_SPECTRA:
+        raise ValueError(f"ocn_spectrum must be one of {OCN_SPECTRA}")
     schema = detect_schema(input_nc)
     if not cwave:
         cwave = get_default_config()["cwave"]
     with xr.open_dataset(input_nc) as ds:
         logger.info("loaded %s (schema %r: %s)", input_nc, schema, SCHEMAS[schema])
-        if schema == "polar":
+        if schema == "polar" and ocn_spectrum == "cartesian" and "oswCartSpecRe" in ds:
+            schema = "ocn_cartesian"
+            logger.info("OCN WV file: using %s", SCHEMAS[schema])
+            out = compute_cwaves(ocn_cartesian_spectrum(ds, lag=lag), **cwave)
+        elif schema == "polar":
             out = compute_cwaves(polar_spectrum(ds), **cwave)
         else:
             re_var = f"xspectra_{lag}tau_Re"
@@ -247,7 +324,15 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         choices=[1, 2],
         default=DEFAULT_LAG,
-        help="xsp schema: cross-spectrum lag (default 2 = 2tau)",
+        help="cross-spectrum lag: xspectra_{lag}tau (xsp schema) or oswLag index "
+        "(OCN WV cartesian), default 2",
+    )
+    parser.add_argument(
+        "--ocn-spectrum",
+        choices=list(OCN_SPECTRA),
+        default="cartesian",
+        help="OCN WV file: cartesian cross-spectrum oswCartSpec on its native sinh "
+        "grid (default) or polar wave spectrum oswPolSpec",
     )
     parser.add_argument(
         "--pol", type=int, default=0, help="xsp schema: polarization index (default 0)"
@@ -284,6 +369,7 @@ def entrypoint(argv: list[str] | None = None) -> int:
             args.input_nc,
             lag=args.lag,
             pol=args.pol,
+            ocn_spectrum=args.ocn_spectrum,
             part=args.part,
             **_cwave_kwargs(args),
         )

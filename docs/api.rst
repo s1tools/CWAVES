@@ -46,6 +46,8 @@ Client (NetCDF files)
 
 .. autofunction:: cwaves.client.detect_schema
 
+.. autofunction:: cwaves.client.ocn_cartesian_spectrum
+
 .. autofunction:: cwaves.client.polar_spectrum
 
 Utilities

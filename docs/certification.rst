@@ -32,21 +32,21 @@ SAR roughness
 Cross-spectra and CWAVE kernels
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Each of the two figures below shows, for one decode method, three panels : the
+Each of the two figures below shows, for one input product, three panels : the
 modulus :math:`|X_S|`, the same spectrum with the CWAVE kernel
 (:math:`k_{gp}=1`, :math:`\varphi_{hf}=1`) **superimposed** as contours, and the
-**pointwise integrand** :math:`\text{kernel} \times |X_S|_{\text{norm}}` that is
-summed over the domain to yield the CWAVE parameter (the intermediate step of
-:func:`cwaves.compute_cwaves`). Both are plotted
+**integrand density** :math:`\text{kernel} \times |X_S|_{\text{norm}}` whose
+area integral (library cell areas) is the CWAVE parameter (the intermediate
+step of :func:`cwaves.compute_cwaves`). Both are plotted
 on the **same display domain** :math:`k_x \in [0, k_{max}]`,
 :math:`k_y \in [-k_{max}, k_{max}]` (black = zero spectrum), so the panels are
 directly comparable.
 
-* **OCN WV, cartesian-sinh → regular** (``oswCartSpec`` sinh grid decompressed
-  to a regular one-sided grid in rad/m,
-  :func:`cwaves.scripts.ocn_sinh.compute_ocn_sinh_cartesian`, the IFREMER
-  decompressor reproduced for this comparison; the library itself integrates
-  directly on the sinh grid) :
+* **OCN WV, native sinh grid** (``oswCartSpec`` read as stored, no
+  decompression, :func:`cwaves.client.ocn_cartesian_spectrum`: the normalised
+  ``m/m`` axes divided by the estimation-area sizes, ``k_rg = oswKx /
+  oswGroundRngSize``, ``k_az = oswKy / oswAziSize``, checked against the SAR
+  geometry on 1800 products, issue #12) :
 
   .. figure:: figures/certification_ocn_sinh.png
      :align: center
@@ -62,7 +62,8 @@ directly comparable.
 In each figure, the middle panel overlays the CWAVE kernel contours (cyan) on
 :math:`|X_S|` -- the kernel ellipses are elongated along the range direction
 (:math:`k_x`), matching the spectral structure -- and the right panel shows the
-integrand, whose sum over the domain is the CWAVE value in the title.
+integrand density, whose area integral (library cell areas) is the CWAVE value
+in the title.
 
 The elliptic, range-elongated support of the kernel follows the domain :math:`A`
 and is consistent with the dominant lobes of the cross-spectra, which is the
@@ -73,16 +74,16 @@ Full CWAVE basis (all 20 parameters)
 
 The two figures below render the **entire default CWAVE basis**
 (:math:`N_k = 4` Gegenbauer x :math:`N_\varphi = 5` harmonic = 20 parameters)
-for each decode method, on the same S1A WV1 acquisition as above. Each panel is
-the pointwise integrand :math:`\text{kernel}_{(k_{gp},\,\varphi_{hf})} \times
+for each input product, on the same S1A WV1 acquisition as above. Each panel is
+the integrand density :math:`\text{kernel}_{(k_{gp},\,\varphi_{hf})} \times
 |X_S|_{\rm norm}` for one parameter, with the resulting CWAVE value in the
 title; the colour scale is shared (and symmetric) across all panels of a method,
 with its bounds set to the 90 % central interval (5th-95th percentile) of the
 absolute integrand so that isolated kernel peaks do not wash out the bulk of
-the data. This makes the 20-parameter output of the decode methods
+the data. This makes the 20-parameter output of the two products
 directly comparable.
 
-* **OCN WV, cartesian-sinh → regular** :
+* **OCN WV, native sinh grid** :
 
   .. figure:: figures/certification_all_ocn_sinh.png
      :align: center

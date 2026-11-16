@@ -1,8 +1,8 @@
 """Tests for the CWAVE CLI client (``cwaves.client``): schema detection and the
 single entry point ``compute_cwaves_from_file`` / ``cwaves --input-nc``.
 
-Fixtures shipped in ``assets/``: the ESA OCN WV measurement (polar
-``oswPolSpec``), the reduced SARWave L1B XSP WV cross-spectrum, and the tiled
+Fixtures shipped in ``assets/``: the ESA OCN WV measurement (cartesian
+``oswCartSpec`` on its sinh grid and polar ``oswPolSpec``), the reduced SARWave L1B XSP WV cross-spectrum, and the tiled
 IW products (spectra in NetCDF groups).
 """
 
@@ -14,6 +14,7 @@ from cwaves.client import (
     compute_cwaves_from_file,
     detect_schema,
     entrypoint,
+    ocn_cartesian_spectrum,
     polar_spectrum,
 )
 
@@ -41,8 +42,51 @@ def test_detect_schema_missing_file():
         detect_schema("/nonexistent.nc")
 
 
-def test_polar_file(osw_measurement_nc):
+def test_ocn_cartesian_file(osw_measurement_nc):
     cp = compute_cwaves_from_file(osw_measurement_nc)
+    assert cp.attrs["schema"] == "ocn_cartesian"
+    assert cp.attrs["grid"] == "cartesian"
+    assert cp.attrs["coverage"] == "half"
+    assert np.isfinite(cp.values).all()
+    with xr.open_dataset(osw_measurement_nc) as ds:
+        direct = compute_cwaves(ocn_cartesian_spectrum(ds))
+    np.testing.assert_allclose(cp, direct)
+
+
+def test_ocn_cartesian_spectrum_calibration(osw_measurement_nc):
+    """Normalised m/m axes -> rad/m: central step = 2 pi / (1024 ground pixels)."""
+    with xr.open_dataset(osw_measurement_nc) as ds:
+        spec = ocn_cartesian_spectrum(ds)
+        cell = {"oswAzSize": 0, "oswRaSize": 0}
+        px_rg = float(ds["oswGroundRngSize"].isel(cell)) / float(
+            ds["oswRaSizeSLC"].isel(cell)
+        )
+        px_az = float(ds["oswAziSize"].isel(cell)) / float(
+            ds["oswAzSizeSLC"].isel(cell)
+        )
+    assert spec.dims == ("freq_line", "freq_sample")
+    assert float(spec.k_rg.min()) == 0.0
+    step_rg = float(spec.k_rg[1] - spec.k_rg[0])
+    centre = spec.sizes["freq_line"] // 2
+    step_az = float(spec.k_az[centre + 1] - spec.k_az[centre])
+    np.testing.assert_allclose(step_rg, 2 * np.pi / (1024 * px_rg), rtol=1e-3)
+    np.testing.assert_allclose(step_az, 2 * np.pi / (1024 * px_az), rtol=1e-3)
+
+
+def test_ocn_cartesian_spectrum_errors(osw_measurement_nc):
+    with xr.open_dataset(osw_measurement_nc) as ds:
+        with pytest.raises(ValueError, match="not an OCN WV"):
+            ocn_cartesian_spectrum(ds.drop_vars("oswGroundRngSize"))
+        bad = ds.copy()
+        bad["oswCartSpecRe"] = bad["oswCartSpecRe"] * np.nan
+        with pytest.raises(ValueError, match="NaN"):
+            ocn_cartesian_spectrum(bad)
+    with pytest.raises(ValueError, match="ocn_spectrum"):
+        compute_cwaves_from_file(osw_measurement_nc, ocn_spectrum="sinh")
+
+
+def test_polar_file(osw_measurement_nc):
+    cp = compute_cwaves_from_file(osw_measurement_nc, ocn_spectrum="polar")
     assert cp.attrs["schema"] == "polar"
     assert cp.attrs["grid"] == "polar"
     assert cp.attrs["coverage"] == "full"

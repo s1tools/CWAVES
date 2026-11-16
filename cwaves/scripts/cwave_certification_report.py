@@ -52,8 +52,9 @@ Four product schemas are accepted, auto-detected :
   dimensions), via ``xspectra_{lag}tau_Re/Im`` + ``k_rg``/``k_az``;
 * **OCN WV osw products** (``oswCartSpecRe/Im``) : the cartesian
   cross-spectrum is stored on a sinh (non-uniform) wavenumber grid in
-  normalized (``m/m``) units and is decoded to a regular grid in rad/m by
-  :func:`cwaves.scripts.ocn_sinh.compute_ocn_sinh_cartesian`;
+  normalized (``m/m``) units; it is used on that native grid, the axes
+  converted to rad/m with the estimation-area sizes
+  (:func:`cwaves.client.ocn_cartesian_spectrum`);
 * **WW3 model colocation products** (polar ``polSpec`` E(k, phi)) : the smooth
   directional **wave elevation spectrum** (``k`` in 1/m, ``phi`` in degrees) is
   converted to rad/m and resampled onto a regular cartesian grid, providing a
@@ -101,6 +102,7 @@ from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 from scipy.interpolate import RegularGridInterpolator  # noqa: E402
 
+from cwaves.client import ocn_cartesian_spectrum  # noqa: E402
 from cwaves.compute_cwaves import (  # noqa: E402
     compute_cwaves,
     compute_kernel,
@@ -109,7 +111,6 @@ from cwaves.compute_cwaves import (  # noqa: E402
 )
 from cwaves.config import get_default_config  # noqa: E402
 from cwaves.grid import build_quadrature  # noqa: E402
-from cwaves.scripts.ocn_sinh import compute_ocn_sinh_cartesian  # noqa: E402
 from cwaves.scripts.plot_kernels import _apply_style  # noqa: E402
 
 logger = logging.getLogger("cwaves.certification_report")
@@ -305,7 +306,7 @@ def _product_kind(ds: xr.Dataset) -> str:
         labels.
     """
     if "oswCartSpecRe" in ds.variables and "oswCartSpecIm" in ds.variables:
-        return "OCN WV (cartesian sinh grid, decoded to regular rad/m)"
+        return "OCN WV (cartesian cross-spectrum on its native sinh grid, rad/m)"
     if "polSpec" in ds.variables:
         return (
             "WW3 model (directional wave elevation spectrum E(k, phi), "
@@ -406,9 +407,10 @@ def _load_cross_spectrum(
     """Build the complex one-sided wavenumber-domain spectrum of one product.
 
     Detects the product schema and dispatches : an **OCN WV** product
-    (``oswCartSpecRe/Im``) is decoded from the sinh (non-uniform, ``m/m``)
-    wavenumber grid to a regular grid in rad/m by
-    :func:`cwaves.scripts.ocn_sinh.compute_ocn_sinh_cartesian`; a **WW3 model** product
+    (``oswCartSpecRe/Im``) is read on its native sinh (non-uniform) grid, the
+    normalised ``m/m`` axes converted to rad/m with the estimation-area sizes
+    (:func:`cwaves.client.ocn_cartesian_spectrum`, no decompression); a
+    **WW3 model** product
     (polar ``polSpec``, the directional wave elevation spectrum E(k, phi)) is
     resampled to a regular cartesian rad/m grid (see
     :func:`_ww3_elevation_spectrum`); a **SARWAVE L1B XSP** or an **Envisat
@@ -434,7 +436,7 @@ def _load_cross_spectrum(
         wave elevation spectrum), dims ``(freq_line, freq_sample)``.
     """
     if "oswCartSpecRe" in ds.variables and "oswCartSpecIm" in ds.variables:
-        xs = compute_ocn_sinh_cartesian(ds, lag=lag)
+        xs = ocn_cartesian_spectrum(ds, lag=lag)
     elif "polSpec" in ds.variables:
         if kmax is None:
             raise ValueError("kmax is required to resample a WW3 model product")

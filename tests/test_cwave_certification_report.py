@@ -143,47 +143,36 @@ def _make_xsp_product_envisat(path: str) -> None:
 def _make_ocn_product(path: str) -> None:
     """Write a minimal OCN WV osw product (cartesian sinh grid, ``m/m`` units).
 
-    The ``oswCartSpecRe/Im`` are on a sinh (non-uniform) wavenumber grid in
-    normalized (``m/m``) units, decoded to a regular rad/m grid by
-    :func:`cwaves.scripts.ocn_sinh.compute_ocn_sinh_cartesian`. Single-tile layout
-    (no ``oswAzSize`` / ``oswRaSize`` dims) with the calibration inputs the
-    decoder needs (``oswKy``, ``oswAziSize``, ``owiIncidenceAngle`` and the
-    ``raSamplingFreq`` attribute).
+    The ``oswCartSpecRe/Im`` are on a sinh (non-uniform) wavenumber grid whose
+    axes are normalised wavenumbers (rad/m times the estimation-area size), as
+    in the ESA product: ``K = a * 32 * sinh(kappa / 32)``. They are read on
+    that native grid by :func:`cwaves.client.ocn_cartesian_spectrum`.
+    Single-cell layout (``oswAzSize`` / ``oswRaSize`` of size 1).
     """
-    from cwaves.scripts.ocn_sinh import DEFAULT_GROWTH_RATE
-
-    n_kx, n_ky, n_lag = 16, 9, 3
-    growth = DEFAULT_GROWTH_RATE
-    azi_size = 20433.0
-    dky_true = 1.3e-3  # rad/m per unit of the normalized (m/m) azimuth grid
-    kappa_az = np.arange(n_ky) - n_ky // 2
-    kky = np.sinh(growth * kappa_az) / growth
-    osw_ky = (dky_true * azi_size * kky).astype(np.float64)
-    osw_kx = (dky_true * azi_size * np.sinh(growth * np.arange(n_kx)) / growth).astype(
-        np.float64
-    )
-    kx_idx = np.arange(n_kx)
-    ky_idx = np.arange(n_ky) - n_ky // 2
-    ky, kx = np.meshgrid(ky_idx, kx_idx, indexing="ij")  # (n_ky, n_kx)
-    gauss = np.exp(-((kx * kx + ky * ky) / 30.0))
-    re = np.repeat(gauss[:, :, None], n_lag, axis=2)
-    im = np.repeat(0.05 * gauss[:, :, None], n_lag, axis=2)
+    n_kx, n_ky, n_lag = 64, 61, 3
+    size_rg, size_az = 21000.0, 20400.0
+    dk = 1.6e-3  # rad/m linear-index step at the grid centre
+    kap_x = np.arange(n_kx)
+    kap_y = np.arange(n_ky) - n_ky // 2
+    osw_kx = dk * size_rg * 32.0 * np.sinh(kap_x / 32.0)
+    osw_ky = dk * size_az * 32.0 * np.sinh(kap_y / 32.0)
+    k_rg = osw_kx / size_rg
+    k_az = osw_ky / size_az
+    kaz, krg = np.meshgrid(k_az, k_rg, indexing="ij")  # (n_ky, n_kx)
+    gauss = np.exp(-((krg - 0.03) ** 2 + (kaz - 0.01) ** 2) / (2 * 0.01**2))
+    gauss += np.exp(-((krg - 0.03) ** 2 + (kaz + 0.01) ** 2) / (2 * 0.01**2))
+    re = np.repeat(gauss[None, None, :, :, None], n_lag, axis=4)
+    im = 0.05 * re
+    dims = ("oswAzSize", "oswRaSize", "oswKyBinSize", "oswKxBinSize", "oswLag")
     ds = xr.Dataset(
         {
-            "oswCartSpecRe": (
-                ("oswKyBinSize", "oswKxBinSize", "oswLag"),
-                re.astype(np.float32),
-            ),
-            "oswCartSpecIm": (
-                ("oswKyBinSize", "oswKxBinSize", "oswLag"),
-                im.astype(np.float32),
-            ),
+            "oswCartSpecRe": (dims, re.astype(np.float32)),
+            "oswCartSpecIm": (dims, im.astype(np.float32)),
             "oswKx": ("oswKxBinSize", osw_kx.astype(np.float32)),
             "oswKy": ("oswKyBinSize", osw_ky.astype(np.float32)),
-            "oswAziSize": np.float64(azi_size),
-            "owiIncidenceAngle": np.float64(30.0),
-        },
-        attrs={"raSamplingFreq": np.float64(1.0e8)},
+            "oswGroundRngSize": (("oswAzSize", "oswRaSize"), [[size_rg]]),
+            "oswAziSize": (("oswAzSize", "oswRaSize"), [[size_az]]),
+        }
     )
     ds.to_netcdf(path)
 
@@ -1127,7 +1116,7 @@ def test_entrypoint_multi_product(tmp_path):
     assert "ocn.nc" in html
     assert "ww3.nc" in html
     # the OCN and WW3 sections carry their schema labels
-    assert "cartesian sinh grid, decoded to regular rad/m" in html
+    assert "cartesian cross-spectrum on its native sinh grid, rad/m" in html
     assert (
         "directional wave elevation spectrum E(k, phi), resampled to cartesian "
         "rad/m" in html
@@ -1183,7 +1172,7 @@ def test_product_kind(tmp_path):
     with xr.open_dataset(nc_ocn) as ds:
         assert (
             _product_kind(ds)
-            == "OCN WV (cartesian sinh grid, decoded to regular rad/m)"
+            == "OCN WV (cartesian cross-spectrum on its native sinh grid, rad/m)"
         )
     with xr.open_dataset(nc_ww3) as ds:
         assert (
@@ -1198,18 +1187,19 @@ def test_load_cross_spectrum_ocn(tmp_path):
     _make_ocn_product(str(nc))
     with xr.open_dataset(nc) as ds:
         xs = _load_cross_spectrum(ds, lag=2)
-    # the sinh grid is decoded to a regular rad/m grid, canonical dims
+    # native sinh grid (no decompression), canonical dims, library cell areas
     assert xs.dims == ("freq_line", "freq_sample")
-    assert xs.shape == (256, 128)  # 256 azimuth x 128 one-sided range
+    assert xs.shape == (61, 64)
     assert np.iscomplexobj(xs.values)
-    assert bool(np.isfinite(np.abs(xs.values)).all())
-    # one-sided range wavenumbers, calibrated to rad/m
+    assert "cell_area" in xs.coords
     k_rg = np.asarray(xs["k_rg"], dtype=float)
     k_az = np.asarray(xs["k_az"], dtype=float)
+    # normalised m/m axes / area size -> rad/m: central step = 1.6e-3 rad/m
     assert float(k_rg.min()) == pytest.approx(0.0, abs=1e-9)
-    assert float(k_rg.max()) == pytest.approx(0.2599, rel=1e-3)
+    assert float(k_rg[1]) == pytest.approx(1.6e-3 * 32 * np.sinh(1 / 32), rel=1e-5)
     assert float(k_az.min()) < 0.0 < float(k_az.max())
-    assert float(np.abs(k_az).max()) == pytest.approx(0.1664, rel=1e-3)
+    # non-uniform (sinh) spacing, growing away from the centre
+    assert np.diff(k_rg)[-1] > 2 * np.diff(k_rg)[0]
 
 
 def test_load_cross_spectrum_l1b(tmp_path):
@@ -1522,7 +1512,7 @@ def test_entrypoint_ocn_product(tmp_path):
     assert rc == 0
     html = (out_dir / "index.html").read_text()
     assert "2 x 3" in html
-    assert "cartesian sinh grid, decoded to regular rad/m" in html
+    assert "cartesian cross-spectrum on its native sinh grid, rad/m" in html
     # one per-basis panel + one curves figure
     assert html.count("data:image/png;base64,") == 2
 

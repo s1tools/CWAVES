@@ -41,8 +41,9 @@ pytest -c pyproject.toml --cov=cwaves --cov-report=term-missing tests/  # + cove
   malformed inputs. The spectrum is never resampled.
 - `cwaves/symmetrize_xspectra.py` — `symmetrize_xspectrum`.
 - `cwaves/client.py` — CLI client (`cwaves`) : one input `--input-nc`, schema
-  detected from the variables (`xspectra_*tau_Re/Im` cross-spectrum or OCN
-  `oswPolSpec` on its native polar grid); `--part complex` writes
+  detected from the variables (`xspectra_*tau_Re/Im` cross-spectrum, or OCN WV
+  `oswCartSpec` on its native sinh grid by default / `oswPolSpec` on its native
+  polar grid with `--ocn-spectrum polar`); `--part complex` writes
   `cwave_params_re/_im`. Tiled (grouped) IW products are rejected with a
   pointer to the IW map script.
 - `cwaves/scripts/iw_cwaves_map.py` — compute CWAVE on the IW subswaths (iw1/iw2/
@@ -50,8 +51,6 @@ pytest -c pyproject.toml --cov=cwaves --cov-report=term-missing tests/  # + cove
   OCN IW measurement (`s1?-iw?-osw-*.nc`, native sinh grid, cycles/m → rad/m) and
   the SARWAVE L1B XSP (`l1b-s1?-iw?-xsp-*.nc`, uniform rad/m). Output shape follows
   `cwave_Nk` x `cwave_Nphi`. Map rendering needs the `scripts` extra (cartopy).
-- `cwaves/scripts/ocn_sinh.py` — report-internal decoder of the OCN sinh
-  cartesian grid (not part of the public API).
 - `cwaves/scripts/plot_kernels.py` — render the CWAVE kernel basis in the
   (kx, ky) wavenumber domain (elliptic domain A, masked outside), as a grid of
   k_gp x phi_hf panels (console script `cwaves-kernels`) (roadmap task 12).

@@ -13,9 +13,10 @@ This produces, in ``docs/figures/`` :
 * ``certification_ocn_sinh.png`` /
   ``certification_xsp.png`` -- one figure per decode method, for the same S1A
   WV1 acquisition (2025-05-01, orbit 058996_075117) : the modulus ``|X_S|``,
-  the same spectrum with the CWAVE kernel contours overlaid, and the pointwise
-  integrand ``kernel x |X_S|_norm x dk`` (the intermediate step summed to
-  produce the CWAVE parameter). All panels share the CWAVE display domain
+  the same spectrum with the CWAVE kernel contours overlaid, and the integrand
+  density ``kernel x |X_S|_norm`` (its area integral, with the library cell
+  areas, is the CWAVE parameter). The OCN WV spectrum is read on its native
+  sinh grid (:func:`cwaves.client.ocn_cartesian_spectrum`). All panels share the CWAVE display domain
   ``k_rg in [0, kmax]``, ``k_az in [-kmax, kmax]`` (black = zero spectrum).
 * ``certification_roundtrip.png`` -- the round-trip (back-and-forth)
   certification : the real WV L1B XSP cross-spectrum is decomposed into CWAVE
@@ -54,7 +55,11 @@ from matplotlib import colors as mcolors  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from cwaves.client import _l1b_cross_spectrum, polar_spectrum  # noqa: E402
+from cwaves.client import (  # noqa: E402
+    _l1b_cross_spectrum,
+    ocn_cartesian_spectrum,
+    polar_spectrum,
+)
 from cwaves.compute_cwaves import (  # noqa: E402
     compute_cwave_parameters,
     compute_cwaves,
@@ -62,7 +67,6 @@ from cwaves.compute_cwaves import (  # noqa: E402
 )
 from cwaves.config import get_default_config  # noqa: E402
 from cwaves.grid import build_quadrature  # noqa: E402
-from cwaves.scripts.ocn_sinh import compute_ocn_sinh_cartesian  # noqa: E402
 from cwaves.scripts.plot_kernels import (  # noqa: E402
     _apply_style,
     build_kernel_grid,
@@ -139,9 +143,9 @@ def _row_arrays(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
     """Compute the two data panels (spec, integrand) and the CWAVE value.
 
-    The integrand is exactly the pointwise product summed by
-    :func:`cwaves.compute_cwave_parameters` :
-    ``kernel * |xs|_normalized * dk_rg * dk_az``.
+    The integrand is the density ``kernel * |xs|_normalized`` whose area
+    integral (library cell areas, :func:`cwaves.grid.build_quadrature`) is the
+    CWAVE value returned by :func:`cwaves.compute_cwaves`.
 
     Args:
         xs: the one-sided (``k_rg >= 0``) complex cross-spectrum, dims
@@ -171,14 +175,14 @@ def _row_arrays(
     kk = (xs.k_rg**2 + xs.k_az**2) ** 0.5
     xxs = xs.where((kk > kmin_) & (kk < kmax))
     xxsm = (xxs.real**2 + xxs.imag**2) ** 0.5
-    dkrg = float(xxs.k_rg.diff(dim="freq_sample").mean(dim="freq_sample"))
-    dkaz = float(xxs.k_az.diff(dim="freq_line").mean(dim="freq_line"))
-    xxsmn = xxsm / (
-        xxsm.sum(dim=["freq_line", "freq_sample"], skipna=True) * dkrg * dkaz
-    )
-    integrand = (k1 * xxsmn) * dkrg * dkaz
+    # library cell areas (exact on uniform and sinh grids, see cwaves.grid)
+    area = build_quadrature(xs).weight
+    xxsmn = xxsm / (xxsm * area).sum(dim=["freq_line", "freq_sample"], skipna=True)
+    integrand = k1 * xxsmn  # density; the CWAVE value is its area integral
     cwave_val = float(
-        integrand.sum(dim=["freq_sample", "freq_line"], skipna=True, min_count=1)
+        (integrand * area).sum(
+            dim=["freq_sample", "freq_line"], skipna=True, min_count=1
+        )
     )
     return (
         k_rg_1d,
@@ -306,12 +310,12 @@ def _gen_certification() -> None:
     kmax_display = 2.0 * np.pi / wlmin
 
     with xr.open_dataset(OCN_WV_NC) as ds:
-        xs_sinh = compute_ocn_sinh_cartesian(ds, lag=2, m_range=256, m_azimuth=256)
+        xs_sinh = ocn_cartesian_spectrum(ds, lag=2)
     with xr.open_dataset(XSP_NC) as ds:
         xs_xsp = _l1b_cross_spectrum(ds, lag=2, time_idx=0, pol_idx=0)
 
     methods = [
-        ("OCN WV  cart-sinh  $\\to$ regular", "ocn_sinh", xs_sinh),
+        ("OCN WV  oswCartSpec  (native sinh grid)", "ocn_sinh", xs_sinh),
         ("SARWAVE L1B  XSP  (2tau)", "xsp", xs_xsp),
     ]
     # common (un-truncated) kernel field, shared by all decode methods
@@ -354,7 +358,7 @@ def _all_param_panels(
 
     Generalises :func:`_row_arrays` to the full default basis : for each of the
     ``n_k x n_phi`` kernels it returns the pointwise integrand
-    ``kernel_{kg,ph} x |X_S|_norm x dk`` (the step summed to yield the CWAVE
+    density ``kernel_{kg,ph} x |X_S|_norm`` (its area integral is the CWAVE
     parameter) and the resulting scalar value.
 
     Args:
@@ -383,18 +387,16 @@ def _all_param_panels(
     kk = (xs.k_rg**2 + xs.k_az**2) ** 0.5
     xxs = xs.where((kk > kmin_) & (kk < kmax))
     xxsm = (xxs.real**2 + xxs.imag**2) ** 0.5
-    dkrg = float(xxs.k_rg.diff(dim="freq_sample").mean(dim="freq_sample"))
-    dkaz = float(xxs.k_az.diff(dim="freq_line").mean(dim="freq_line"))
-    xxsmn = xxsm / (
-        xxsm.sum(dim=["freq_line", "freq_sample"], skipna=True) * dkrg * dkaz
-    )
+    # library cell areas (exact on uniform and sinh grids, see cwaves.grid)
+    area = build_quadrature(xs).weight
+    xxsmn = xxsm / (xxsm * area).sum(dim=["freq_line", "freq_sample"], skipna=True)
     panels: list[tuple[np.ndarray, float]] = []
     for kg in range(1, n_k + 1):
         for ph in range(1, n_phi + 1):
             k = kernel["cwave_kernel"].sel(k_gp=kg, phi_hf=ph)
-            integrand = (k * xxsmn) * dkrg * dkaz
+            integrand = k * xxsmn
             val = float(
-                integrand.sum(
+                (integrand * area).sum(
                     dim=["freq_sample", "freq_line"], skipna=True, min_count=1
                 )
             )
@@ -419,12 +421,12 @@ def _gen_certification_all() -> None:
     kmax_display = 2.0 * np.pi / wlmin
 
     with xr.open_dataset(OCN_WV_NC) as ds:
-        xs_sinh = compute_ocn_sinh_cartesian(ds, lag=2, m_range=256, m_azimuth=256)
+        xs_sinh = ocn_cartesian_spectrum(ds, lag=2)
     with xr.open_dataset(XSP_NC) as ds:
         xs_xsp = _l1b_cross_spectrum(ds, lag=2, time_idx=0, pol_idx=0)
 
     methods = [
-        ("OCN WV  cart-sinh  $\\to$ regular", "ocn_sinh", xs_sinh),
+        ("OCN WV  oswCartSpec  (native sinh grid)", "ocn_sinh", xs_sinh),
         ("SARWAVE L1B  XSP  (2tau)", "xsp", xs_xsp),
     ]
     _apply_style()
