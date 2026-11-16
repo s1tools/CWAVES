@@ -60,6 +60,7 @@ cwaves --input-nc s1a_wv1_xsp.nc --output-nc cwave.nc
 | `cwaves.compute_cwaves(spectrum, cwave_wlmax=600, cwave_wlmin=25, cwave_Nk=4, cwave_Nphi=5, part="modulus")` | **single entry point**: CWAVE parameters of a spectrum on any supported grid |
 | `cwaves.compute_cwave_parameters(xs, cwave_wlmax=600, cwave_wlmin=25, cwave_Nk=4, cwave_Nphi=5, **kwargs)` | `xsar_slc`-compatible signature, delegates to `compute_cwaves` |
 | `cwaves.compute_cwaves_from_file(path, lag=2, pol=0, **cwave)` | CWAVE of the spectrum stored in a NetCDF file (CLI `cwaves`) |
+| `cwaves.reconstruct_spectrum(cwave_params, grid, method="mem", sigma=None)` | reconstruct a spectrum from its CWAVE parameters (maximum entropy, exact constraints; or linear) |
 | `cwaves.compute_kernel(krg, kaz, kmin, kmax, cwave_Nk=4, cwave_Nphi=5, save_cwave_kernel=False, parity="even")` | compute the orthonormal CWAVE kernels |
 | `cwaves.symmetrize_xspectrum(xs, dim_range='freq_sample', dim_azimuth='freq_line')` | symmetrize a one-sided cross-spectrum |
 | `cwaves.gegenbauer_polynoms(x, nk, lbda=1.5)` | Gegenbauer polynomials `C_n^(3/2)` |

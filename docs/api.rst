@@ -16,6 +16,14 @@ Core
 
 .. autofunction:: cwaves.harmonic_functions
 
+Reconstruction
+--------------
+
+.. automodule:: cwaves.reconstruct
+   :no-members:
+
+.. autofunction:: cwaves.reconstruct_spectrum
+
 Grids and quadrature
 --------------------
 

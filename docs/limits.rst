@@ -56,13 +56,18 @@ Limits of the decomposition
 How far can a spectrum be reconstructed?
 ----------------------------------------
 
-The plain reconstruction :math:`\hat f = \sum_i c_i K_i` (on the full plane
-:math:`\tfrac12 \sum_i c_i K_i`) has negative lobes and Gibbs oscillations.
-A **maximum-entropy** reconstruction (no training, no data: maximise
-:math:`-\int \hat f \log \hat f` subject to *exactly* reproducing the CWAVE
-parameters and the unit mass, with :math:`\hat f \ge 0`) respects the
-decomposition by construction and is markedly better. Prototype results
-(relative L2 error on the domain, same coefficients):
+:func:`cwaves.reconstruct_spectrum` offers two reconstructions on any grid.
+The plain **linear** one, :math:`\hat f = \sum_i c_i K_i` (on the full plane
+:math:`\tfrac12 \sum_i c_i K_i`), has negative lobes and Gibbs oscillations.
+The **maximum-entropy** one (``method="mem"``, the default) is the positive
+density that reproduces the CWAVE parameters *exactly* and maximises
+:math:`-\int \hat f(\log \hat f - 1)`: it respects the decomposition by
+construction and needs no training and no information other than the
+parameters. It was added to the library because it **reduces the
+reconstruction loss**: on 62 real spectra x 4 bases (245 non-degenerate cases)
+it is closer to the spectrum than the linear reconstruction (even clipped to
+positive values) in 99.6 % of the cases. Median relative L2 error on the
+kernel domain:
 
 .. list-table::
    :header-rows: 1
@@ -73,37 +78,53 @@ decomposition by construction and is markedly better. Prototype results
      - OCN WV polar, MEM
      - L1B XSP :math:`|X|`, linear
      - L1B XSP :math:`|X|`, MEM
+     - Envisat L1C, linear
+     - Envisat L1C, MEM
    * - 4 x 5
      - 0.64
-     - 0.32
-     - 0.55
-     - 0.42
+     - 0.35
+     - 0.57
+     - 0.45
+     - 0.58
+     - 0.54
    * - 8 x 9
      - 0.37
      - 0.21
-     - 0.40
-     - 0.31
+     - 0.41
+     - 0.30
+     - 0.53
+     - 0.50
    * - 16 x 16
-     - 0.20
+     - 0.19
      - 0.055
      - 0.29
-     - 0.17
+     - 0.18
+     - 0.49
+     - 0.46
    * - 24 x 24
      - 0.064
      - 0.030
-     - 0.18
-     - 0.12
+     - 0.19
+     - 0.14
+     - 0.50
+     - 0.42
 
-The peak wavenumber and direction are recovered exactly from 16 x 16 on. With
-noisy coefficients the constraints must be relaxed (regularisation calibrated
-on the noise level); under-regularised, the maximum-entropy solution becomes
-*worse* than the linear one. What the maximum-entropy step adds is a prior
-(positivity, smoothness), not information: details orthogonal to the basis are
-plausible, not measured. Learned priors (optimal transport on a library of
-spectra, conditional generative models) follow the same rule -- they must
-reproduce the coefficients exactly -- and trade a better prior for training
-data, compute and a risk of hallucinated detail. This reconstruction is a
-prototype, not part of the library.
+(S1A OCN WV polar spectrum: the truth is its centrally-symmetric part; L1B
+XSP: 4 S1A cross-spectra; Envisat: 55 ASAR WV L1C cross-spectra.) The gain is
+large on peaked, well-sampled spectra and small on noisy ones (Envisat).
+
+With **noisy** parameters (e.g. predicted by a model) the constraints must be
+relaxed (``sigma`` = noise standard deviation; Tikhonov at 10 x ``sigma``):
+the gain then shrinks with the basis size and vanishes from about 16 x 16 on
+(5 % noise: error ratio MEM / linear 0.92 at 8 x 9, 0.99 at 24 x 24); use few
+coefficients or ``method="linear"`` there.
+
+What the maximum-entropy step adds is a prior (positivity, maximum entropy),
+not information: details orthogonal to the basis are plausible, not measured.
+Learned priors (optimal transport on a library of spectra, conditional
+generative models) follow the same rule -- they must reproduce the
+coefficients exactly -- and trade a better prior for training data, compute
+and a risk of hallucinated detail.
 
 Implementation choices
 ----------------------

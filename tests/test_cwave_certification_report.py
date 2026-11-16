@@ -302,10 +302,10 @@ def test_normalized_density_unit_mass():
     # the density is non-negative and masked outside the annulus
     assert float(f.min(skipna=True)) >= 0.0
     assert bool(f.isnull().any())
-    # unit mass under the constant-cell-area quadrature
-    dkrg = float(xs.k_rg.diff(dim="freq_sample").mean())
-    dkaz = float(xs.k_az.diff(dim="freq_line").mean())
-    mass = float(f.sum(skipna=True)) * dkrg * dkaz
+    # unit mass under the library cell-area quadrature
+    from cwaves.scripts.cwave_certification_report import _cell_area_of
+
+    mass = float((f * _cell_area_of(f, f.k_rg, f.k_az)).sum(skipna=True))
     assert mass == pytest.approx(1.0, rel=1e-6)
 
 
@@ -1525,3 +1525,18 @@ def test_entrypoint_ocn_product(tmp_path):
     assert "cartesian sinh grid, decoded to regular rad/m" in html
     # one per-basis panel + one curves figure
     assert html.count("data:image/png;base64,") == 2
+
+
+# ---------------------------------------------------------------------------
+# library consistency (cell-area quadrature)
+# ---------------------------------------------------------------------------
+def test_report_coefficients_equal_library():
+    from cwaves.scripts.cwave_certification_report import (
+        _cell_area,
+        _library_consistency,
+    )
+
+    xs = _synthetic_xs().transpose("freq_line", "freq_sample")
+    xs = xs.assign_coords(cell_area=_cell_area(xs))
+    f = _normalized_density(xs, KMIN, KMAX)
+    assert _library_consistency(xs, f, KMIN, KMAX) < 1e-12

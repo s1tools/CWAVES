@@ -431,15 +431,21 @@ The user-facing version is `docs/limits.rst`. Summary, with the evidence
    I, changes the real-product round trip by < 1.5 % up to 32 x 30 (0.160 ->
    0.145 at 32 x 30) and costs 50-100 x more. What mattered was the exact
    cell **areas** (section 6.5).
-7. **Reconstruction** (prototype, not in the library): a maximum-entropy
-   solution `g = m exp(l0 + sum l_i K_i)` (Newton on the convex dual) that
-   reproduces the parameters exactly (residual <= 1e-6) and is non-negative
-   halves to quarters the L2 error of the linear reconstruction `sum c_i K_i`
-   (OCN polar even part: 0.64 -> 0.32 at 4 x 5, 0.20 -> 0.055 at 16 x 16;
-   L1B XSP: 0.55 -> 0.42, 0.29 -> 0.17), peak recovered exactly from 16 x 16.
-   With noisy parameters the constraints must be regularised at ~10x the noise
-   level (16 x 16, 5 % noise: 0.20 -> 0.10); under-regularised it is worse
-   than the linear solution. It adds a prior, not information.
+7. **Reconstruction** (`cwaves.reconstruct_spectrum`, `cwaves/reconstruct.py`,
+   added 2026-11-16). Integrated **because it reduces the reconstruction
+   loss**: on 62 real spectra (S1A L1B XSP 1/2-tau, S1A/S1D OCN WV polar, WW3
+   polar, 55 Envisat L1C) x 4 bases (4x5 to 24x24), with the parameters of
+   `compute_cwaves` and no other information (no mass), the maximum-entropy
+   solution `g = m exp(sum l_i K_i)` (flat prior, Newton on the convex dual,
+   parameters reproduced to 1e-8 relative) is closer to the spectrum than the
+   linear `sum c_i K_i` clipped to >= 0 in 99.6 % of the 245 non-degenerate
+   cases (median relative-L2 gain 8 %; OCN polar 0.19 -> 0.055 and L1B XSP
+   0.29 -> 0.18 at 16 x 16; Envisat 0.49 -> 0.46). It adds a prior
+   (positivity, maximum entropy), not information. With noisy parameters
+   (`sigma`, Tikhonov at 10 x the noise, best of 1-10 x) the gain vanishes from
+   ~16 x 16 on (5 % noise: 8 x 9 ratio 0.92, 24 x 24 ratio 0.99). Only
+   `part="modulus"` parameters are reconstructed by MEM; `method="linear"`
+   handles all parts. Evaluation scripts: `tmp_data/cwave_s6/`.
 8. **Memory**: `compute_kernel` materialises `Nk * Nphi` kernels on the whole
    grid (1301^2 grid x 48 x 40 basis ~ 26 GB); product grids (~1e4 samples)
    are far from this limit.

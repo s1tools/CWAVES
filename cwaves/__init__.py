@@ -10,6 +10,8 @@ Public API
   no resampling is performed.
 - :func:`cwaves.compute_cwave_parameters` : historical ``xsar_slc`` signature,
   kept for API conservativeness; delegates to :func:`cwaves.compute_cwaves`.
+- :func:`cwaves.reconstruct_spectrum` : reconstruction of a spectrum from its
+  CWAVE parameters (maximum entropy, exact constraints, or linear).
 - :func:`cwaves.compute_kernel` : the orthonormal CWAVE kernels.
 - :func:`cwaves.gegenbauer_polynoms` / :func:`cwaves.harmonic_functions` :
   the radial and angular factors of the kernels.
@@ -42,6 +44,7 @@ from cwaves.compute_cwaves import (
     harmonic_functions,
 )
 from cwaves.config import get_default_config, load_config
+from cwaves.reconstruct import reconstruct_spectrum
 from cwaves.symmetrize_xspectra import symmetrize_xspectrum
 
 __all__ = [
@@ -49,6 +52,7 @@ __all__ = [
     "compute_cwave_parameters",
     "compute_kernel",
     "compute_cwaves_from_file",
+    "reconstruct_spectrum",
     "gegenbauer_polynoms",
     "harmonic_functions",
     "symmetrize_xspectrum",

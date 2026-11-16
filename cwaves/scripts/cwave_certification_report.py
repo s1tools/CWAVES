@@ -102,11 +102,13 @@ from matplotlib.patches import Patch  # noqa: E402
 from scipy.interpolate import RegularGridInterpolator  # noqa: E402
 
 from cwaves.compute_cwaves import (  # noqa: E402
+    compute_cwaves,
     compute_kernel,
     gegenbauer_polynoms,
     harmonic_functions,
 )
 from cwaves.config import get_default_config  # noqa: E402
+from cwaves.grid import build_quadrature  # noqa: E402
 from cwaves.scripts.ocn_sinh import compute_ocn_sinh_cartesian  # noqa: E402
 from cwaves.scripts.plot_kernels import _apply_style  # noqa: E402
 
@@ -414,8 +416,9 @@ def _load_cross_spectrum(
     rad/m grid, see :func:`_l1b_cross_spectrum_compat`).
 
     The returned array has the canonical ``(freq_line, freq_sample)`` dims with
-    ``k_rg`` / ``k_az`` coordinates in rad/m, matching the input contract of
-    ``compute_cwave_parameters`` (one-sided, ``k_rg >= 0``).
+    ``k_rg`` / ``k_az`` coordinates in rad/m (one-sided, ``k_rg >= 0``) and a
+    ``cell_area`` coordinate: the library quadrature weights
+    (:func:`_cell_area`).
 
     Args:
         ds: open ``xarray.Dataset`` of the product.
@@ -438,7 +441,54 @@ def _load_cross_spectrum(
         xs = _ww3_elevation_spectrum(ds, kmax=kmax)
     else:
         xs = _l1b_cross_spectrum_compat(ds, lag=lag)
-    return xs.transpose("freq_line", "freq_sample")
+    xs = xs.transpose("freq_line", "freq_sample")
+    return xs.assign_coords(cell_area=_cell_area(xs))
+
+
+def _cell_area(spectrum: xr.DataArray) -> xr.DataArray:
+    """Library quadrature weights (exact cell areas) of a cartesian spectrum.
+
+    The report integrates with the very weights of :func:`cwaves.compute_cwaves`
+    (:func:`cwaves.grid.build_quadrature`: mid-point cells, half-plane edge
+    fitted to ``k_rg = 0``), so its coefficients are those of the library.
+
+    Args:
+        spectrum: spectrum with 1-D ``k_rg`` (``freq_sample``) and ``k_az``
+            (``freq_line``) coordinates.
+
+    Returns:
+        The cell areas (rad^2/m^2), dims ``(freq_line, freq_sample)``.
+    """
+    weight = build_quadrature(spectrum).weight.transpose("freq_line", "freq_sample")
+    return weight.drop_vars([c for c in weight.coords if c not in weight.dims])
+
+
+def _cell_area_of(
+    f: xr.DataArray, k_rg: xr.DataArray, k_az: xr.DataArray
+) -> xr.DataArray:
+    """Cell areas carried by ``f`` (``cell_area`` coordinate), else rebuilt.
+
+    A density cropped from a product keeps the weights of the full product
+    grid; a synthetic or interpolated grid gets the weights of its own grid.
+    """
+    if "cell_area" in f.coords:
+        area: xr.DataArray = f.coords["cell_area"]
+        return area.drop_vars(
+            [
+                c
+                for c in f.coords["cell_area"].coords
+                if c not in ("freq_line", "freq_sample")
+            ]
+        )
+    probe = xr.DataArray(
+        np.ones((k_az.size, k_rg.size)),
+        dims=("freq_line", "freq_sample"),
+        coords={
+            "k_rg": ("freq_sample", np.asarray(k_rg, dtype=float)),
+            "k_az": ("freq_line", np.asarray(k_az, dtype=float)),
+        },
+    )
+    return _cell_area(probe)
 
 
 def _kernel_domain_mask(
@@ -471,10 +521,9 @@ def _kernel_domain_mask(
 def _normalized_density(xs: xr.DataArray, kmin: float, kmax: float) -> xr.DataArray:
     """Return the normalized ``|xs|`` density projected by the library.
 
-    Mirrors the input contract of ``compute_cwave_parameters``
-    (``repository_specifications.md`` section 6) : mask to the annulus
+    Mirrors :func:`cwaves.compute_cwaves` : mask to the annulus
     ``kmin < kk < kmax``, drop fully masked rows/columns, take the real
-    modulus, and normalize to unit mass.
+    modulus, and normalize to unit mass with the library cell areas.
 
     Args:
         xs: complex one-sided spectrum (``k_rg >= 0``) : a SAR cross-spectrum
@@ -489,9 +538,8 @@ def _normalized_density(xs: xr.DataArray, kmin: float, kmax: float) -> xr.DataAr
     xxs = xs.where((kk > kmin) & (kk < kmax))
     xxs = xxs.dropna(dim="freq_line", how="all").dropna(dim="freq_sample", how="all")
     xxsm = cast("xr.DataArray", np.abs(xxs))
-    dkrg = float(xxs.k_rg.diff(dim="freq_sample").mean(dim="freq_sample"))
-    dkaz = float(xxs.k_az.diff(dim="freq_line").mean(dim="freq_line"))
-    return xxsm / (xxsm.sum(dim=["freq_line", "freq_sample"]) * dkrg * dkaz)
+    area = _cell_area_of(xxsm, xxsm.k_rg, xxsm.k_az)
+    return xxsm / (xxsm * area).sum(dim=["freq_line", "freq_sample"])
 
 
 def _gegenbauer_coef(n: int) -> float:
@@ -798,7 +846,8 @@ def _sweep_basis(
     """Decompose/recompose the spectrum for one basis and measure the error.
 
     The CWAVE coefficients are computed exactly as
-    ``compute_cwave_parameters`` does (``c_i = sum(kernel_i * f) * dA``) and
+    :func:`cwaves.compute_cwaves` does (``c_i = sum(kernel_i * f * dA)`` with
+    the library cell areas ``dA``) and
     the spectrum is recomposed as ``fhat = sum(c_i * kernel_i)``.
 
     Args:
@@ -814,9 +863,7 @@ def _sweep_basis(
     Returns:
         A dict with the scalar metrics (and the 2-D fields when requested).
     """
-    dkrg = float(k_rg.diff(dim="freq_sample").mean(dim="freq_sample"))
-    dkaz = float(k_az.diff(dim="freq_line").mean(dim="freq_line"))
-    da = dkrg * dkaz
+    da = _cell_area_of(f, k_rg, k_az)
 
     kernel = compute_kernel(k_rg, k_az, kmin, kmax, cwave_Nk=nk, cwave_Nphi=nphi)[
         "cwave_kernel"
@@ -839,8 +886,9 @@ def _sweep_basis(
     idemp_max_abs = float(np.nanmax(dc_abs))
     idemp_max_rel = idemp_max_abs / c_max if c_max > 0.0 else 0.0
 
-    fv = np.asarray(f, dtype=float)
-    fhv = np.asarray(fhat, dtype=float)
+    fv = np.asarray(f.transpose("freq_line", "freq_sample"), dtype=float)
+    fhv = np.asarray(fhat.transpose("freq_line", "freq_sample"), dtype=float)
+    dav = np.asarray(da.transpose("freq_line", "freq_sample"), dtype=float)
     ev = fv - fhv
     fmax = float(np.nanmax(fv))
     norm2 = float(np.nansum(fv**2))
@@ -849,7 +897,9 @@ def _sweep_basis(
     valid = ~np.isnan(ev)
     within_half = float(np.mean(np.abs(ev[valid]) <= 0.5 * fmax))
     sum_c2 = float(np.nansum(np.asarray(coeffs, dtype=float) ** 2))
-    parseval_gap = float(abs(resid2 * da - (norm2 * da - sum_c2)) / (norm2 * da))
+    norm2_w = float(np.nansum(fv**2 * dav))
+    resid2_w = float(np.nansum(ev**2 * dav))
+    parseval_gap = float(abs(resid2_w - (norm2_w - sum_c2)) / norm2_w)
     # per-basis point-to-point match metrics (normalized |xs| units, a.u.)
     abs_ev = np.abs(ev)
     n_valid = int(valid.sum())
@@ -889,7 +939,7 @@ def _gram_diagnostic(
 ) -> tuple[float, float]:
     """Discrete Gram matrix of the (Nk x Nphi) kernel basis on the grid.
 
-    ``M_ij = sum_grid K_i K_j dA`` ; the basis is orthonormal on the grid iff
+    ``M_ij = sum_grid K_i K_j dA`` (library cell areas) ; the basis is orthonormal on the grid iff
     ``M = I``. The kernel values outside the elliptic (gamma=2) wavenumber
     domain are NaN and are zero-filled, matching the ``skipna`` convention of
     :func:`cwaves.compute_cwaves.compute_cwave_parameters`.
@@ -908,14 +958,13 @@ def _gram_diagnostic(
     kernel = compute_kernel(k_rg, k_az, kmin, kmax, cwave_Nk=nk, cwave_Nphi=nphi)[
         "cwave_kernel"
     ]
-    dkrg = float(k_rg.diff(dim="freq_sample").mean(dim="freq_sample"))
-    dkaz = float(k_az.diff(dim="freq_line").mean(dim="freq_line"))
+    area = np.asarray(_cell_area_of(xr.DataArray(), k_rg, k_az), dtype=float)
     k = np.asarray(
         kernel.transpose("k_gp", "phi_hf", "freq_line", "freq_sample"), dtype=float
     )
     k = np.where(np.isnan(k), 0.0, k)
     n = k.shape[0] * k.shape[1]
-    kvec = k.reshape(n, -1) * np.sqrt(dkrg * dkaz)
+    kvec = k.reshape(n, -1) * np.sqrt(area.ravel())
     m = kvec @ kvec.T
     dev = m - np.eye(n)
     diag_err = float(np.max(np.abs(np.diag(dev))))
@@ -1535,11 +1584,21 @@ def _product_section(prod: dict[str, Any], anchor: str) -> str:
         ).format(rows="".join(native_rows))
 
     th_domain = "<th>rel. L2 (in kernel domain)</th>" if has_domain else ""
+    lib_gap = prod.get("lib_gap")
+    lib_note = (
+        '<p class="sub">Library consistency: the coefficients of this report '
+        "equal those of <code>cwaves.compute_cwaves</code> on the same spectrum "
+        f"(library cell-area quadrature), max relative difference {lib_gap:.1e} "
+        f"at {REFERENCE_BASIS[0]} x {REFERENCE_BASIS[1]}.</p>"
+        if lib_gap is not None
+        else ""
+    )
     return f"""
   <h2 class="product" id="{anchor}">{prod["name"]}</h2>
   <p class="sub"><code>{kind}</code> &mdash; {grid_shape[0]} x {grid_shape[1]}
   product grid ({n_pixels} pixels), {spec_desc}, display window
   k<sub>x</sub> &isin; [0, {kmax_display:.4f}] rad/m.</p>
+  {lib_note}
   <div class="card findings">
     <h3 style="margin-top:0">Key finding</h3>
     <p>{answer}</p>
@@ -2540,6 +2599,41 @@ def _parse_bases(text: str) -> list[tuple[int, int]]:
     return list(zip(vals[0::2], vals[1::2], strict=True))
 
 
+def _library_consistency(
+    xs: xr.DataArray, f: xr.DataArray, kmin: float, kmax: float
+) -> float:
+    """Max relative difference between the report and the library coefficients.
+
+    The report re-implements the projection to expose the round trip; this
+    check guarantees that its coefficients are those returned by
+    :func:`cwaves.compute_cwaves` on the same spectrum (reference basis).
+    """
+    nk, nphi = REFERENCE_BASIS
+    k_rg = xr.DataArray(np.asarray(f.k_rg, dtype=float), dims="freq_sample")
+    k_az = xr.DataArray(np.asarray(f.k_az, dtype=float), dims="freq_line")
+    kernel = compute_kernel(k_rg, k_az, kmin, kmax, cwave_Nk=nk, cwave_Nphi=nphi)[
+        "cwave_kernel"
+    ]
+    da = _cell_area_of(f, k_rg, k_az)
+    mine = np.asarray(
+        (kernel * f * da)
+        .sum(dim=["freq_sample", "freq_line"], skipna=True)
+        .transpose("k_gp", "phi_hf"),
+        dtype=float,
+    )
+    lib = np.asarray(
+        compute_cwaves(
+            xs.drop_vars("cell_area"),
+            cwave_wlmax=2.0 * np.pi / kmin,
+            cwave_wlmin=2.0 * np.pi / kmax,
+            cwave_Nk=nk,
+            cwave_Nphi=nphi,
+        ).transpose("k_gp", "phi_hf"),
+        dtype=float,
+    )
+    return float(np.max(np.abs(mine - lib)) / np.max(np.abs(lib)))
+
+
 def _sweep_product(
     xsp_nc: Path,
     kmin: float,
@@ -2581,6 +2675,12 @@ def _sweep_product(
         bases = list(dict.fromkeys(list(bases) + NATIVE_EXTRA_BASES))
 
     f = _normalized_density(xs, kmin, kmax)
+    lib_gap = _library_consistency(xs, f, kmin, kmax)
+    logger.info(
+        "report coefficients vs cwaves.compute_cwaves (%dx%d): max rel diff = %.1e",
+        *REFERENCE_BASIS,
+        lib_gap,
+    )
     # the kernel must be evaluated on the same (masked / dropna'd) grid as the
     # density, exactly as ``compute_cwave_parameters`` does with ``xxs.k_rg``
     k_rg = xr.DataArray(np.asarray(f.k_rg, dtype=float), dims="freq_sample")
@@ -2610,9 +2710,9 @@ def _sweep_product(
     if domain_mask_2d is not None:
         fd = f.where(domain)
         fd = fd.dropna(dim="freq_line", how="all").dropna(dim="freq_sample", how="all")
-        dkrg = float(fd.k_rg.diff(dim="freq_sample").mean(dim="freq_sample"))
-        dkaz = float(fd.k_az.diff(dim="freq_line").mean(dim="freq_line"))
-        f_dom = fd / (fd.sum(dim=["freq_line", "freq_sample"]) * dkrg * dkaz)
+        f_dom = fd / (fd * _cell_area_of(fd, fd.k_rg, fd.k_az)).sum(
+            dim=["freq_line", "freq_sample"]
+        )
         k_rg_dom = xr.DataArray(np.asarray(f_dom.k_rg, dtype=float), dims="freq_sample")
         k_az_dom = xr.DataArray(np.asarray(f_dom.k_az, dtype=float), dims="freq_line")
         logger.info(
@@ -2740,6 +2840,8 @@ def _sweep_product(
         "gram_grid": (2 * len(k_az_1d), 2 * len(k_rg_1d)),
         "gram_diag": gram_diag,
         "gram_off": gram_off,
+        # max relative difference with cwaves.compute_cwaves (reference basis)
+        "lib_gap": lib_gap,
     }
 
 

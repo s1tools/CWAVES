@@ -82,6 +82,22 @@ Complex spectra
    c = cwaves.compute_cwaves(xs, part="complex")  # Re -> even, Im -> odd
    c.real, c.imag
 
+Reconstruction
+--------------
+
+.. code-block:: python
+
+   params = cwaves.compute_cwaves(xs, cwave_Nk=16, cwave_Nphi=16)
+   rec = cwaves.reconstruct_spectrum(params, xs)            # maximum entropy
+   lin = cwaves.reconstruct_spectrum(params, xs, method="linear")
+   # noisy (e.g. predicted) parameters: relax the constraints
+   rec = cwaves.reconstruct_spectrum(params_pred, xs, sigma=noise_std)
+
+The output grid is any grid accepted by :func:`cwaves.compute_cwaves` (only
+its coordinates are used); the result is the density ``|f| / mass`` of the
+parameters, zero outside the kernel domain. See :ref:`limits` for what can and
+cannot be recovered.
+
 Parameters
 ----------
 
