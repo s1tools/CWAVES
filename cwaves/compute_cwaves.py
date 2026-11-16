@@ -172,7 +172,9 @@ def compute_cwaves(
                 parts, dim="_cwave_slice", coords="minimal", compat="override"
             )
             out = out.assign_coords(
-                _cwave_slice=stacked.indexes["_cwave_slice"]
+                xr.Coordinates.from_pandas_multiindex(
+                    stacked.indexes["_cwave_slice"], "_cwave_slice"
+                )
             ).unstack("_cwave_slice")
             out.attrs.update(parts[0].attrs)
             return out.rename("cwave_params")

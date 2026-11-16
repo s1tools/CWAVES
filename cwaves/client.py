@@ -27,7 +27,7 @@ import os
 import sys
 from typing import Any, cast
 
-import netCDF4
+import h5py
 import numpy as np
 import xarray as xr
 
@@ -58,6 +58,22 @@ def _setup_logging() -> None:
     logger.setLevel(logging.INFO)
 
 
+def _root_content(input_nc: str | os.PathLike[str]) -> tuple[set[str], list[str]]:
+    """Return the root variable names and group names of a NetCDF file.
+
+    NetCDF-4 (HDF5) files are inspected with ``h5py`` (no data read); other
+    formats (NetCDF-3) fall back to ``xarray`` and have no groups.
+    """
+    try:
+        with h5py.File(input_nc, "r") as h5:
+            variables = {k for k, v in h5.items() if isinstance(v, h5py.Dataset)}
+            groups = [k for k, v in h5.items() if isinstance(v, h5py.Group)]
+        return variables, groups
+    except OSError:
+        with xr.open_dataset(input_nc) as ds:
+            return set(ds.variables), []
+
+
 def detect_schema(input_nc: str | os.PathLike[str]) -> str:
     """Return the schema of a NetCDF file (``"xsp"`` or ``"polar"``).
 
@@ -74,9 +90,7 @@ def detect_schema(input_nc: str | os.PathLike[str]) -> str:
     """
     if not os.path.exists(input_nc):
         raise FileNotFoundError(input_nc)
-    with netCDF4.Dataset(input_nc) as nc:
-        variables = set(nc.variables)
-        groups = list(nc.groups)
+    variables, groups = _root_content(input_nc)
     if "oswPolSpec" in variables:
         return "polar"
     if any(v.startswith("xspectra_") and v.endswith("_Re") for v in variables):
