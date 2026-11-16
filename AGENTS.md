@@ -48,7 +48,7 @@ pytest -c pyproject.toml --cov=cwaves --cov-report=term-missing tests/  # + cove
   pointer to the IW map script.
 - `cwaves/scripts/iw_cwaves_map.py` — compute CWAVE on the IW subswaths (iw1/iw2/
   iw3) of a Sentinel-1 IW product and render a georeferenced map. Handles both the
-  OCN IW measurement (`s1?-iw?-osw-*.nc`, native sinh grid, cycles/m → rad/m) and
+  OCN IW measurement (`s1?-iw?-osw-*.nc`, native sinh grid, rad/m) and
   the SARWAVE L1B XSP (`l1b-s1?-iw?-xsp-*.nc`, uniform rad/m). Output shape follows
   `cwave_Nk` x `cwave_Nphi`. Map rendering needs the `scripts` extra (cartopy).
 - `cwaves/scripts/plot_kernels.py` — render the CWAVE kernel basis in the

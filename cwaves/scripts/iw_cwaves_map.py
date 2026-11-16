@@ -9,8 +9,8 @@ Two product families are supported (auto-detected from the ``.SAFE`` content):
 
 * **OCN IW measurement** (``s1d_iw_ocn__2s``) : per-subswath ``s1?-iw?-osw-*.nc``
   files. The cross-spectra ``oswCartSpecRe/Im`` are on a **sinh (non-uniform)
-  grid** in units ``m/m`` (cycles/m). They are converted to rad/m and passed
-  **on their native sinh grid** to :func:`cwaves.compute_cwaves`, which
+  grid** in rad/m (checked against a colocated L1B XSP, issue #12). They are
+  passed **on their native sinh grid** to :func:`cwaves.compute_cwaves`, which
   integrates with the exact non-uniform cell areas (no resampling; the grid
   size may vary from tile to tile).
 * **SARWAVE L1B XSP** (``slc/iw/l1b``) : per-subswath ``l1b-s1?-iw?-xsp-*.nc``
@@ -132,8 +132,8 @@ def _cwave_shape(cwave: dict[str, Any]) -> tuple[int, int]:
 def ocn_tile_spectrum(ds: xr.Dataset, iaz: int, ira: int, lag: int) -> xr.DataArray:
     """Complex cross-spectrum of one OCN osw tile on its native sinh grid.
 
-    The ``oswKx`` / ``oswKy`` wavenumbers (cycles/m, ``m/m``) are converted to
-    rad/m; grid lines with NaN wavenumbers (trailing bins of some interburst
+    The ``oswKx`` / ``oswKy`` wavenumbers are physical rad/m (a colocated L1B
+    XSP check rejects cycles/m, issue #12) and are used as is; grid lines with NaN wavenumbers (trailing bins of some interburst
     tiles) are dropped. The result carries the cartesian ``k_rg`` / ``k_az``
     coordinates expected by :func:`cwaves.compute_cwaves`.
 
@@ -154,8 +154,8 @@ def ocn_tile_spectrum(ds: xr.Dataset, iaz: int, ira: int, lag: int) -> xr.DataAr
         real = real.isel(oswLag=lag)
         imag = imag.isel(oswLag=lag)
     spec = real + 1j * imag
-    k_rg = 2.0 * np.pi * np.asarray(ds["oswKx"].isel(tile).values, dtype=float)
-    k_az = 2.0 * np.pi * np.asarray(ds["oswKy"].isel(tile).values, dtype=float)
+    k_rg = np.asarray(ds["oswKx"].isel(tile).values, dtype=float)
+    k_az = np.asarray(ds["oswKy"].isel(tile).values, dtype=float)
     dim_az, dim_rg = spec.dims  # (ky_bin, kx_bin)
     spec = spec.assign_coords(k_rg=(dim_rg, k_rg), k_az=(dim_az, k_az))
     return spec.isel({dim_rg: np.isfinite(k_rg), dim_az: np.isfinite(k_az)})

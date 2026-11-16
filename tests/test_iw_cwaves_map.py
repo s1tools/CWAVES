@@ -59,7 +59,7 @@ def test_default_pol_by_mode():
 def test_ocn_tile_spectrum_native_sinh_grid(ocn_iw1_nc):
     with xr.open_dataset(ocn_iw1_nc, group="intraburst") as ds:
         spec = ocn_tile_spectrum(ds, 0, 0, 2)
-        kx = 2 * np.pi * ds["oswKx"].isel(oswAzSize=0, oswRaSize=0).values
+        kx = ds["oswKx"].isel(oswAzSize=0, oswRaSize=0).values
     # same samples as the product (rad/m), non-uniform spacing kept as is
     np.testing.assert_allclose(spec.k_rg.values, kx[np.isfinite(kx)])
     d = np.diff(spec.k_rg.values)

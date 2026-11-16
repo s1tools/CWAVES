@@ -400,9 +400,14 @@ growth (-4.5 %), and a 256-point linear grid that cuts the CWAVE domain
 (|k| <~ 0.21 / 0.19 rad/m < kmax). Once corrected (growth 1/32, product scale,
 600 points) it reproduces the native-grid parameters to 0.1-0.7 % (~2 % in a
 few cases, sinc interpolation), so decompression brings nothing.
-OCN **IW** groups store physical axes (no area size); the IW script assumes
-cycles/m (x 2 pi); a peak-wavelength check (median 133 m vs 838 m in rad/m)
-supports it but is not conclusive (open point in issue #12).
+OCN **IW** groups store physical axes (no area size) in **rad/m**. Checked
+(2026-11-16) on 175 intraburst tiles of S1A IW 2026-04-10 08:12 against a
+colocated L1B IW XSP generated with xsar_slc (tiles 20 km, < 10 km apart):
+log-amplitude correlation 0.68 with the axes as rad/m vs -0.17 as cycles/m;
+per-axis best scale range 1.13 (IQR 0.90-1.59), azimuth 0.71 (IQR 0.67-0.75).
+The former x 2 pi of `iw_cwaves_map` was wrong and is removed; the azimuth
+factor 0.71 is unexplained (azimuth cut-off / processing differences or a real
+offset; open point in issue #12).
 
 ## 9. Complex extension: odd harmonics (2026-11-16)
 
