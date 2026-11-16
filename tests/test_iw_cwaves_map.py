@@ -16,8 +16,8 @@ from cwaves.scripts.iw_cwaves_map import (
     default_pol,
     detect_product,
     entrypoint,
+    ocn_tile_spectrum,
     plot_map,
-    resample_sinh_to_regular,
 )
 
 # ---------------------------------------------------------------------------
@@ -52,29 +52,20 @@ def test_default_pol_by_mode():
 
 
 # ---------------------------------------------------------------------------
-# resample_sinh_to_regular
+# ocn_tile_spectrum (native sinh grid, no resampling)
 # ---------------------------------------------------------------------------
 
 
-def test_resample_sinh_to_regular(ocn_iw1_nc):
-    kmax = 2 * np.pi / 25.0
+def test_ocn_tile_spectrum_native_sinh_grid(ocn_iw1_nc):
     with xr.open_dataset(ocn_iw1_nc, group="intraburst") as ds:
+        spec = ocn_tile_spectrum(ds, 0, 0, 2)
         kx = 2 * np.pi * ds["oswKx"].isel(oswAzSize=0, oswRaSize=0).values
-        ky = 2 * np.pi * ds["oswKy"].isel(oswAzSize=0, oswRaSize=0).values
-        spec = ds["oswCartSpecRe"].isel(oswAzSize=0, oswRaSize=0, oswLag=2) + 1j * ds[
-            "oswCartSpecIm"
-        ].isel(oswAzSize=0, oswRaSize=0, oswLag=2)
-    xs = resample_sinh_to_regular(spec, kx, ky, kmax, 64)
-    assert xs.sizes["freq_sample"] == 64
-    assert xs.sizes["freq_line"] == 64
-    # the resampled range grid must be uniform (one-sided) and azimuth two-sided
-    k_rg = xs.k_rg.values
-    assert float(k_rg.min()) == 0.0
-    rel_std = float(np.diff(k_rg).std() / np.diff(k_rg).mean())
-    assert rel_std < 1e-5
-    assert xs.k_az.min() < 0 < xs.k_az.max()
-    assert np.iscomplexobj(xs)
-    assert np.isfinite(xs.values).any()
+    # same samples as the product (rad/m), non-uniform spacing kept as is
+    np.testing.assert_allclose(spec.k_rg.values, kx[np.isfinite(kx)])
+    d = np.diff(spec.k_rg.values)
+    assert d.std() / d.mean() > 0.05  # sinh grid: genuinely non-uniform
+    assert spec.k_az.min() < 0 < spec.k_az.max()
+    assert np.iscomplexobj(spec)
 
 
 def test_ocn_iw_fixture_wavenumber_contract(ocn_iw1_nc):
@@ -90,25 +81,22 @@ def test_ocn_iw_fixture_wavenumber_contract(ocn_iw1_nc):
         assert np.isclose(ky.min(), -ky.max(), atol=1e-5)  # symmetric about 0
 
 
-def test_resample_sinh_to_regular_with_nan_bins(ocn_iw1_nc):
-    # some OCN interburst tiles carry trailing NaN oswKy bins ; the resampling
-    # must drop them (the interpolator needs strictly ascending finite points)
-    kmax = 2 * np.pi / 25.0
+def test_ocn_tile_spectrum_drops_nan_bins(ocn_iw1_nc):
+    # some OCN interburst tiles carry trailing NaN oswKx/oswKy bins: the grid
+    # lines are dropped so that the quadrature sees a finite monotonic grid
     with xr.open_dataset(ocn_iw1_nc, group="intraburst") as ds:
-        kx = 2 * np.pi * ds["oswKx"].isel(oswAzSize=0, oswRaSize=0).values
-        ky = 2 * np.pi * ds["oswKy"].isel(oswAzSize=0, oswRaSize=0).values
-        spec = ds["oswCartSpecRe"].isel(oswAzSize=0, oswRaSize=0, oswLag=2) + 1j * ds[
-            "oswCartSpecIm"
-        ].isel(oswAzSize=0, oswRaSize=0, oswLag=2)
-    # inject trailing NaN bins in both the range (one-sided) and azimuth grids
-    kx_nan = kx.copy()
-    kx_nan[-2:] = np.nan
-    ky_nan = ky.copy()
-    ky_nan[-2:] = np.nan
-    xs = resample_sinh_to_regular(spec, kx_nan, ky_nan, kmax, 48)
-    assert xs.sizes["freq_sample"] == 48
-    assert xs.sizes["freq_line"] == 48
-    assert np.isfinite(xs.values).any()
+        ds = ds.load()
+    kx = ds["oswKx"].values.copy()
+    ky = ds["oswKy"].values.copy()
+    kx[0, 0, -2:] = np.nan
+    ky[0, 0, -2:] = np.nan
+    ds["oswKx"] = (ds["oswKx"].dims, kx)
+    ds["oswKy"] = (ds["oswKy"].dims, ky)
+    spec = ocn_tile_spectrum(ds, 0, 0, 2)
+    assert np.isfinite(spec.k_rg.values).all()
+    assert np.isfinite(spec.k_az.values).all()
+    n_rg = np.isfinite(ds["oswKx"].isel(oswAzSize=0, oswRaSize=0).values).sum()
+    assert spec.k_rg.size == n_rg
 
 
 # ---------------------------------------------------------------------------
@@ -117,10 +105,7 @@ def test_resample_sinh_to_regular_with_nan_bins(ocn_iw1_nc):
 
 
 def test_compute_ocn_subswath(ocn_iw1_nc):
-    kmax = 2 * np.pi / 25.0
-    lons, lats, params = compute_ocn_subswath(
-        str(ocn_iw1_nc), "intraburst", 2, kmax, 64
-    )
+    lons, lats, params = compute_ocn_subswath(str(ocn_iw1_nc), "intraburst", 2)
     assert lons.shape == (2, 2)
     assert lats.shape == (2, 2)
     assert params.shape == (2, 2, 4, 5)
@@ -128,8 +113,7 @@ def test_compute_ocn_subswath(ocn_iw1_nc):
 
 
 def test_compute_ocn_subswath_lag1(ocn_iw1_nc):
-    kmax = 2 * np.pi / 25.0
-    _, _, params = compute_ocn_subswath(str(ocn_iw1_nc), "intraburst", 1, kmax, 64)
+    _, _, params = compute_ocn_subswath(str(ocn_iw1_nc), "intraburst", 1)
     assert params.shape == (2, 2, 4, 5)
 
 
@@ -165,10 +149,7 @@ def test_compute_sarwave_subswah_bad_pol(sarwave_iw2_nc):
 
 
 def test_plot_map(tmp_path, ocn_iw1_nc):
-    kmax = 2 * np.pi / 25.0
-    lons, lats, params = compute_ocn_subswath(
-        str(ocn_iw1_nc), "intraburst", 2, kmax, 64
-    )
+    lons, lats, params = compute_ocn_subswath(str(ocn_iw1_nc), "intraburst", 2)
     out = tmp_path / "map.png"
     plot_map({"iw1": (lons, lats, params)}, 1, 1, str(out), "test map")
     assert out.exists()
@@ -187,8 +168,10 @@ def test_entrypoint_ocn(ocn_iw1_nc, tmp_path):
             "2",
             "--pol",
             "VV",
-            "--n-grid",
-            "48",
+            "--cwave-nk",
+            "3",
+            "--cwave-nphi",
+            "7",
             "--output-png",
             str(out),
         ]
@@ -199,10 +182,22 @@ def test_entrypoint_ocn(ocn_iw1_nc, tmp_path):
 
 
 def test_compute_ocn_subswath_interburst(ocn_iw1_nc):
-    kmax = 2 * np.pi / 25.0
-    _, _, params = compute_ocn_subswath(str(ocn_iw1_nc), "interburst", 2, kmax, 64)
+    _, _, params = compute_ocn_subswath(str(ocn_iw1_nc), "interburst", 2)
     assert params.shape[2] == 4
     assert params.shape[3] == 5
+
+
+def test_subswath_params_shape_follows_basis_size(ocn_iw1_nc, sarwave_iw2_nc):
+    # the output size follows cwave_Nk x cwave_Nphi (no hard-coded 4 x 5)
+    _, _, p_ocn = compute_ocn_subswath(
+        str(ocn_iw1_nc), "intraburst", 2, cwave_Nk=3, cwave_Nphi=7
+    )
+    assert p_ocn.shape[2:] == (3, 7)
+    assert np.isfinite(p_ocn).any()
+    _, _, p_sar = compute_sarwave_subswath(
+        str(sarwave_iw2_nc), "intraburst", 2, "VV", cwave_Nk=6, cwave_Nphi=3
+    )
+    assert p_sar.shape[2:] == (6, 3)
 
 
 def test_entrypoint_sarwave(sarwave_iw2_nc, tmp_path):
@@ -237,7 +232,5 @@ def test_entrypoint_missing_input(tmp_path):
 
 def test_entrypoint_no_matching_pol(ocn_iw1_nc, tmp_path):
     # the osw fixture is VV only ; asking for HH yields no per-subswath file
-    rc = entrypoint(
-        ["--input-safe", str(ocn_iw1_nc.parent), "--pol", "HH", "--n-grid", "48"]
-    )
+    rc = entrypoint(["--input-safe", str(ocn_iw1_nc.parent), "--pol", "HH"])
     assert rc == 1

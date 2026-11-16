@@ -1,7 +1,7 @@
+.. _certification:
+
 Certification
 =============
-
-.. _certification:
 
 This page certifies that the CWAVE kernels are consistent with the structure of
 real SAR ocean cross-spectra, and shows full georeferenced CWAVE maps produced
@@ -32,33 +32,28 @@ SAR roughness
 Cross-spectra and CWAVE kernels
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Each of the three figures below shows, for one decode method, three panels : the
+Each of the two figures below shows, for one decode method, three panels : the
 modulus :math:`|X_S|`, the same spectrum with the CWAVE kernel
 (:math:`k_{gp}=1`, :math:`\varphi_{hf}=1`) **superimposed** as contours, and the
 **pointwise integrand** :math:`\text{kernel} \times |X_S|_{\text{norm}}` that is
 summed over the domain to yield the CWAVE parameter (the intermediate step of
-:func:`cwaves.compute_cwaves.compute_cwave_parameters`). All three are plotted
+:func:`cwaves.compute_cwaves`). Both are plotted
 on the **same display domain** :math:`k_x \in [0, k_{max}]`,
 :math:`k_y \in [-k_{max}, k_{max}]` (black = zero spectrum), so the panels are
 directly comparable.
 
-* **OCN WV, polar → cartesian** (``oswPolSpec`` resampled to a cartesian grid,
-  :func:`cwaves.client.polar_to_cartesian`) :
-
-  .. figure:: figures/certification_ocn_polar.png
-     :align: center
-     :width: 100%
-
 * **OCN WV, cartesian-sinh → regular** (``oswCartSpec`` sinh grid decompressed
   to a regular one-sided grid in rad/m,
-  :func:`cwaves.ocn_sinh.compute_ocn_sinh_cartesian`) :
+  :func:`cwaves.scripts.ocn_sinh.compute_ocn_sinh_cartesian`, the IFREMER
+  decompressor reproduced for this comparison; the library itself integrates
+  directly on the sinh grid) :
 
   .. figure:: figures/certification_ocn_sinh.png
      :align: center
      :width: 100%
 
 * **SARWAVE L1B XSP** (the self-contained ``xspectra_2tau`` cross-spectrum,
-  :func:`cwaves.compute_cwaves_from_l1b`) :
+  :func:`cwaves.compute_cwaves_from_file`) :
 
   .. figure:: figures/certification_xsp.png
      :align: center
@@ -76,7 +71,7 @@ intended behaviour of the orthonormal basis on :math:`A`.
 Full CWAVE basis (all 20 parameters)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The three figures below render the **entire default CWAVE basis**
+The two figures below render the **entire default CWAVE basis**
 (:math:`N_k = 4` Gegenbauer x :math:`N_\varphi = 5` harmonic = 20 parameters)
 for each decode method, on the same S1A WV1 acquisition as above. Each panel is
 the pointwise integrand :math:`\text{kernel}_{(k_{gp},\,\varphi_{hf})} \times
@@ -84,14 +79,8 @@ the pointwise integrand :math:`\text{kernel}_{(k_{gp},\,\varphi_{hf})} \times
 title; the colour scale is shared (and symmetric) across all panels of a method,
 with its bounds set to the 90 % central interval (5th-95th percentile) of the
 absolute integrand so that isolated kernel peaks do not wash out the bulk of
-the data. This makes the 20-parameter output of the three decode methods
+the data. This makes the 20-parameter output of the decode methods
 directly comparable.
-
-* **OCN WV, polar → cartesian** :
-
-  .. figure:: figures/certification_all_ocn_polar.png
-     :align: center
-     :width: 100%
 
 * **OCN WV, cartesian-sinh → regular** :
 
@@ -110,50 +99,36 @@ directly comparable.
 Direct polar-grid computation (no resampling)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The OCN WV decode method above resamples the polar spectrum ``oswPolSpec``
-onto a cartesian wavenumber grid before the CWAVE computation. The library can
-instead integrate the CWAVE projection **directly on the native polar grid**
-(:func:`cwaves.compute_cwave_parameters_polar`, CLI flag ``--polar-direct``),
-with the exact polar cell areas
-:math:`k\,\mathrm{d}k\,\mathrm{d}\varphi` and no resampling step :
+The OCN WV polar spectrum ``oswPolSpec`` is used **on its native polar grid**
+by :func:`cwaves.compute_cwaves` (no resampling to a cartesian grid), with the
+exact polar cell areas :math:`k\,\mathrm{d}k\,\mathrm{d}\varphi` over the
+**full circle** :
 
 .. figure:: figures/certification_ocn_polar_direct.png
    :align: center
    :width: 100%
 
-   CWAVE computation directly on the OCN WV **native polar grid** (72 x 60,
-   same S1A WV1 acquisition). Left: the modulus ``|X_S|`` on the one-sided
-   half (:math:`k_x \ge 0`, displayed as :math:`\varphi \in [-90^\circ,
-   +90^\circ]` around the range direction); the same grid with the (1, 1)
-   kernel (masked outside the elliptic domain :math:`A`) and the pointwise
+   CWAVE computation on the OCN WV **native polar grid** (72 x 60, same S1A
+   WV1 acquisition, :math:`\varphi \in [-180^\circ, 180^\circ]` from the
+   range direction). Left: the polar spectrum; middle: the (1, 1) kernel
+   evaluated on that grid (even: :math:`K(-\mathbf{k}) = K(\mathbf{k})`,
+   masked outside the elliptic domain :math:`A`); right: the pointwise
    integrand, whose sum over the polar cells is the CWAVE parameter in the
-   title; right: the 20-parameter agreement between the direct polar path and
-   the cartesian (128 x 128) path (1:1 line in black).
+   title.
 
-The two paths agree closely : for the 20 default parameters the largest
-absolute difference is 0.73 (on :math:`k_{gp}=1`, :math:`\varphi_{hf}=5`,
-cartesian value -8.43), and every parameter of magnitude above 5 agrees within
-9.3 % relative; the largest relative difference (49 %) occurs on the
-smallest-magnitude parameter (:math:`k_{gp}=4`, :math:`\varphi_{hf}=3`,
-cartesian value -0.88). The residual is the quadrature error of the product's
-own coarse 72 x 60 polar grid, which **both** paths share : refining the
-cartesian resampling grid (32 x 64 -> 128 x 128 -> 512 x 1024) moves the
-cartesian path toward the same fine-grid reference (rms relative difference
-38 % -> 10 % -> 3 %), so the polar path is not less accurate than the
-cartesian one — it is exact for the product's own (log-)polar sampling. See
-:ref:`theory` (direct polar-grid computation) and
-``repository_specifications.md`` (section 8) for the full contract. The unit
-tests (:mod:`tests/test_compute_cwave_polar`) certify the agreement on the same
-fixture, plus the polar-grid kernel orthonormality and the input validation.
-
-The figure is regenerated by :file:`docs/generate_figures.py` (see the
-"Reproducing the figures" section below); the parameters alone are computed
-with the CLI flag :
+``oswPolSpec`` is a **directional** wave spectrum (the 180 degree ambiguity is
+removed): it is not centrally symmetric, and the CWAVE parameters computed on
+the full circle are those of its centrally-symmetric part (see :ref:`theory`
+and :ref:`limits`). The former resampling of this spectrum onto a cartesian
+grid (and the former restriction to the :math:`k_x \ge 0` half of the
+circle, which dropped the waves travelling towards negative range) has been
+removed. The unit tests (:mod:`tests/test_grid`) certify that a polar, a sinh
+and a fine cartesian sampling of the same analytic spectrum give the same
+parameters to :math:`2\cdot10^{-6}`. From the command line :
 
 .. code-block:: bash
 
-   cwaves-osw --input-nc-osw assets/s1a-wv1-ocn-vv-20250501t060101-058996-075117-001.nc \
-       --polar-direct
+   cwaves --input-nc assets/s1a-wv1-ocn-vv-20250501t060101-058996-075117-001.nc
 
 Round-trip reconstruction (back-and-forth)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

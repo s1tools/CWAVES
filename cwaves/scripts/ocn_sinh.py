@@ -1,5 +1,10 @@
 """Decompress the OCN WV cartesian cross-spectrum (sinh grid) to a regular grid.
 
+**Report-internal tool** (used by ``cwaves-certification-report`` to reproduce
+the IFREMER ``l2_osw_decompressor``). It is *not* needed to compute CWAVE
+parameters: :func:`cwaves.compute_cwaves` integrates directly on the sinh
+(non-uniform) grid with exact cell-area weights.
+
 The ESA OCN WV Sentinel-1 measurement stores the cartesian cross-spectrum
 (``oswCartSpecRe`` / ``oswCartSpecIm``) on a **sinh (non-uniform) wavenumber
 grid** in normalized (``m/m``) units. :func:`compute_cwave_parameters` needs a
@@ -18,14 +23,9 @@ range (``dkx``) and azimuth (``dky``) cell spacings are computed independently
 from ``oswKy`` / ``oswAziSize`` (azimuth) and ``raSamplingFreq`` /
 ``owiIncidenceAngle`` (range), matching the IFREMER ``get_k_matrix``.
 
-This complements :func:`cwaves.client.polar_to_cartesian`, which goes through the
-polar spectrum ``oswPolSpec`` : both are valid ways to obtain a regular cartesian
-cross-spectrum from an OCN WV product.
 """
 
 from __future__ import annotations
-
-from typing import Any, cast
 
 import numpy as np
 import xarray as xr
@@ -232,30 +232,3 @@ def compute_ocn_sinh_cartesian(
         coords={"k_rg": ("freq_sample", kx1), "k_az": ("freq_line", ky)},
         name="oswCartSpec_sinh",
     )
-
-
-def compute_cwaves_from_ocn_sinh(
-    input_nc: str,
-    lag: int = 2,
-    **cwave: Any,
-) -> xr.DataArray:
-    """Compute the CWAVE parameters of an OCN WV tile from the sinh cartesian grid.
-
-    Args:
-        input_nc: path to the OCN WV measurement NetCDF file.
-        lag: the ``oswLag`` index (default 2 = the 2-tau cross-spectrum).
-        **cwave: ``cwave_*`` parameters forwarded to
-            :func:`cwaves.compute_cwave_parameters` (defaults from the packaged
-            ``default_config.yml`` if not given).
-
-    Returns:
-        The CWAVE parameters ``xarray.DataArray`` (``k_gp`` x ``phi_hf``).
-    """
-    from cwaves.compute_cwaves import compute_cwave_parameters
-    from cwaves.config import get_default_config
-
-    if not cwave:
-        cwave = get_default_config()["cwave"]
-    with xr.open_dataset(input_nc) as ds:
-        xs = compute_ocn_sinh_cartesian(ds, lag=lag)
-        return cast("xr.DataArray", compute_cwave_parameters(xs, **cwave))

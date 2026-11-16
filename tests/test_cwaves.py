@@ -136,14 +136,22 @@ def test_compute_cwave_parameters(mock_xspectra_da):
         assert np.all(cp["k_gp"].values >= 0)
 
 
-def test_compute_cwave_parameters_rejects_full_spectrum(mock_xspectra_da):
-    # a full / symmetrized spectrum (two-sided range, k_rg < 0) must be rejected :
-    # the CWAVE computation is performed on the one-sided (half) range domain only
-    # (see repository_specifications.md section 6).
-    full = symmetrize_xspectrum(mock_xspectra_da)
+def test_compute_cwave_parameters_full_plane_equals_half_plane(l1b_xsp_nc):
+    # a full-plane (symmetrized, Hermitian) cross-spectrum is accepted: the
+    # kernels are even, so the full-plane integral normalised by the full mass
+    # equals the half-plane CWAVE parameters (repository_specifications.md
+    # section 6). The residual comes from the last k_rg column dropped by
+    # symmetrize_xspectrum (FFT convention).
+    with xr.open_dataset(l1b_xsp_nc) as ds:
+        half = _l1b_cross_spectrum(ds, 2, 0, 0).load()
+    full = symmetrize_xspectrum(half)
     assert float(full.k_rg.min()) < 0  # it is indeed two-sided in range
-    with pytest.raises(ValueError, match="one-sided"):
-        compute_cwave_parameters(full)
+    c_half = compute_cwave_parameters(half)
+    c_full = compute_cwave_parameters(full)
+    assert c_half.attrs["coverage"] == "half"
+    assert c_full.attrs["coverage"] == "full"
+    rel = float(abs(c_full - c_half).max() / abs(c_half).max())
+    assert rel < 5e-3
 
 
 def test_compute_cwave_parameters_with_kwargs(mock_xspectra_da_small):

@@ -1,220 +1,126 @@
-"""Tests for the CWAVE CLI client (``cwaves.client``).
+"""Tests for the CWAVE CLI client (``cwaves.client``): schema detection and the
+single entry point ``compute_cwaves_from_file`` / ``cwaves --input-nc``.
 
-Covers both supported input products :
-- the ESA OCN WV Sentinel-1 *measurement* fixture (``oswPolSpec``, polar to
-  cartesian) shipped in ``assets/``,
-- the reduced SARWave *L1B XSP* cross-spectrum fixture (``xspectra_{lag}tau``)
-  also shipped in ``assets/``.
+Fixtures shipped in ``assets/``: the ESA OCN WV measurement (polar
+``oswPolSpec``), the reduced SARWave L1B XSP WV cross-spectrum, and the tiled
+IW products (spectra in NetCDF groups).
 """
 
 import numpy as np
 import pytest
 import xarray as xr
+from cwaves import compute_cwaves
 from cwaves.client import (
-    compute_cwaves_from_l1b,
-    compute_cwaves_from_osw,
+    compute_cwaves_from_file,
+    detect_schema,
     entrypoint,
-    polar_to_cartesian,
+    polar_spectrum,
 )
 
-# ---------------------------------------------------------------------------
-# OCN WV measurement product (oswPolSpec, polar -> cartesian)
-# ---------------------------------------------------------------------------
+
+def test_detect_schema(osw_measurement_nc, l1b_xsp_nc):
+    assert detect_schema(osw_measurement_nc) == "polar"
+    assert detect_schema(l1b_xsp_nc) == "xsp"
 
 
-def test_polar_to_cartesian_shape(osw_measurement_nc):
-    with xr.open_dataset(osw_measurement_nc) as ds:
-        xs = polar_to_cartesian(ds, n_range=32, n_azimuth=64)
-    assert xs.sizes["freq_sample"] == 32
-    assert xs.sizes["freq_line"] == 64
-    # one-sided range (k_rg >= 0), two-sided azimuth
-    assert xs.k_rg.min() >= 0
-    assert xs.k_az.min() < 0 < xs.k_az.max()
-    assert np.iscomplexobj(xs)
-    assert np.isfinite(xs.values).any()
+def test_detect_schema_grouped_product(ocn_iw1_nc, sarwave_iw2_nc):
+    for nc in (ocn_iw1_nc, sarwave_iw2_nc):
+        with pytest.raises(ValueError, match="iw_cwaves_map"):
+            detect_schema(nc)
 
 
-def test_compute_cwaves_from_osw(osw_measurement_nc):
-    cp = compute_cwaves_from_osw(str(osw_measurement_nc), n_range=32, n_azimuth=64)
-    assert cp.name == "cwave_params"
-    assert cp.sizes["k_gp"] == 4
-    assert cp.sizes["phi_hf"] == 5
-    assert np.isfinite(cp.values).all()
+def test_detect_schema_unsupported(tmp_path):
+    nc = tmp_path / "foo.nc"
+    xr.Dataset({"foo": ("x", [1.0])}).to_netcdf(nc)
+    with pytest.raises(ValueError, match="no supported spectrum"):
+        detect_schema(nc)
 
 
-def test_compute_cwaves_from_osw_custom_cwave(osw_measurement_nc):
-    cp = compute_cwaves_from_osw(
-        str(osw_measurement_nc),
-        n_range=32,
-        n_azimuth=64,
-        cwave_wlmax=800,
-        cwave_wlmin=30,
-        cwave_Nk=3,
-        cwave_Nphi=3,
-    )
-    assert cp.sizes["k_gp"] == 3
-    assert cp.sizes["phi_hf"] == 3
-
-
-def test_entrypoint_osw(osw_measurement_nc, capsys):
-    rc = entrypoint(
-        [
-            "--input-nc-osw",
-            str(osw_measurement_nc),
-            "--n-range",
-            "32",
-            "--n-azimuth",
-            "64",
-        ]
-    )
-    assert rc == 0
-    out = capsys.readouterr().out
-    # logger.info lines are written to stdout
-    assert "CWAVE parameters computed" in out
-    assert "CWAVE parameters" in out
-
-
-def test_entrypoint_osw_with_cwave_options(osw_measurement_nc, capsys):
-    rc = entrypoint(
-        [
-            "--input-nc-osw",
-            str(osw_measurement_nc),
-            "--n-range",
-            "32",
-            "--n-azimuth",
-            "64",
-            "--cwave-wlmax",
-            "800",
-            "--cwave-wlmin",
-            "30",
-            "--cwave-nk",
-            "3",
-            "--cwave-nphi",
-            "3",
-        ]
-    )
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "3 kernels (k_gp) x 3 (phi_hf)" in out
-
-
-# ---------------------------------------------------------------------------
-# SARWave L1B XSP cross-spectrum product (xspectra_{lag}tau)
-# ---------------------------------------------------------------------------
-
-
-def test_compute_cwaves_from_l1b(l1b_xsp_nc):
-    cp = compute_cwaves_from_l1b(str(l1b_xsp_nc))
-    assert cp.name == "cwave_params"
-    assert cp.sizes["time"] == 2
-    assert cp.sizes["k_gp"] == 4
-    assert cp.sizes["phi_hf"] == 5
-    assert np.isfinite(cp.values).all()
-
-
-def test_compute_cwaves_from_l1b_lag1(l1b_xsp_nc):
-    cp = compute_cwaves_from_l1b(str(l1b_xsp_nc), lag=1)
-    assert cp.sizes["time"] == 2
-    assert cp.sizes["k_gp"] == 4
-    assert cp.sizes["phi_hf"] == 5
-    assert np.isfinite(cp.values).all()
-
-
-def test_compute_cwaves_from_l1b_custom_cwave(l1b_xsp_nc):
-    cp = compute_cwaves_from_l1b(
-        str(l1b_xsp_nc),
-        cwave_wlmax=800,
-        cwave_wlmin=30,
-        cwave_Nk=3,
-        cwave_Nphi=3,
-    )
-    assert cp.sizes["k_gp"] == 3
-    assert cp.sizes["phi_hf"] == 3
-
-
-def test_entrypoint_l1b(l1b_xsp_nc, capsys):
-    rc = entrypoint(
-        [
-            "--input-nc-l1b",
-            str(l1b_xsp_nc),
-        ]
-    )
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "CWAVE parameters computed" in out
-    assert "CWAVE parameters" in out
-
-
-def test_entrypoint_l1b_output_nc(l1b_xsp_nc, tmp_path, capsys):
-    out_nc = tmp_path / "cwave_out.nc"
-    rc = entrypoint(
-        [
-            "--input-nc-l1b",
-            str(l1b_xsp_nc),
-            "--output-nc",
-            str(out_nc),
-        ]
-    )
-    assert rc == 0
-    assert out_nc.exists()
-    with xr.open_dataset(out_nc) as out:
-        assert out.sizes["time"] == 2
-        assert "cwave_params" in out
-    assert "saved CWAVE parameters to" in capsys.readouterr().out
-
-
-def test_entrypoint_l1b_with_cwave_options(l1b_xsp_nc, capsys):
-    rc = entrypoint(
-        [
-            "--input-nc-l1b",
-            str(l1b_xsp_nc),
-            "--cwave-wlmax",
-            "800",
-            "--cwave-wlmin",
-            "30",
-            "--cwave-nk",
-            "3",
-            "--cwave-nphi",
-            "3",
-        ]
-    )
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "3 kernels (k_gp) x 3 (phi_hf)" in out
-
-
-# ---------------------------------------------------------------------------
-# entrypoint error handling
-# ---------------------------------------------------------------------------
-
-
-def test_entrypoint_missing_file(capsys):
-    rc = entrypoint(["--input-nc-osw", "/nonexistent/file.nc"])
-    assert rc == 1
-    err_out = capsys.readouterr().out
-    assert "failed to compute CWAVE parameters" in err_out
-
-
-def test_compute_cwaves_from_l1b_missing_file():
+def test_detect_schema_missing_file():
     with pytest.raises(FileNotFoundError):
-        compute_cwaves_from_l1b("/nonexistent/l1b.nc")
+        detect_schema("/nonexistent.nc")
 
 
-def test_entrypoint_no_input(capsys):
-    rc = entrypoint([])
-    assert rc == 1
-    err_out = capsys.readouterr().out
-    assert "exactly one of" in err_out
+def test_polar_file(osw_measurement_nc):
+    cp = compute_cwaves_from_file(osw_measurement_nc)
+    assert cp.attrs["schema"] == "polar"
+    assert cp.attrs["grid"] == "polar"
+    assert cp.attrs["coverage"] == "full"
+    assert (cp.sizes["k_gp"], cp.sizes["phi_hf"]) == (4, 5)
+    assert np.isfinite(cp.values).all()
+    # same result as calling the library on the extracted spectrum
+    with xr.open_dataset(osw_measurement_nc) as ds:
+        direct = compute_cwaves(polar_spectrum(ds))
+    np.testing.assert_allclose(cp, direct)
 
 
-def test_entrypoint_both_inputs(capsys, osw_measurement_nc, l1b_xsp_nc):
+def test_polar_spectrum_radians(osw_measurement_nc):
+    with xr.open_dataset(osw_measurement_nc) as ds:
+        spec = polar_spectrum(ds)
+    assert spec.dims == ("phi", "k")
+    assert float(spec.phi.max()) < 2 * np.pi
+
+
+def test_xsp_file(l1b_xsp_nc):
+    cp = compute_cwaves_from_file(l1b_xsp_nc)
+    assert cp.attrs["schema"] == "xsp"
+    assert cp.attrs["coverage"] == "half"
+    assert "time" in cp.dims
+    assert np.isfinite(cp.values).all()
+
+
+def test_xsp_file_lag1_custom_basis(l1b_xsp_nc):
+    cp = compute_cwaves_from_file(l1b_xsp_nc, lag=1, cwave_Nk=3, cwave_Nphi=7)
+    assert (cp.sizes["k_gp"], cp.sizes["phi_hf"]) == (3, 7)
+
+
+def test_xsp_missing_lag(l1b_xsp_nc, tmp_path):
+    with xr.open_dataset(l1b_xsp_nc) as ds:
+        ds.drop_vars(["xspectra_1tau_Re", "xspectra_1tau_Im"]).to_netcdf(
+            tmp_path / "x.nc"
+        )
+    with pytest.raises(ValueError, match="xspectra_1tau_Re"):
+        compute_cwaves_from_file(tmp_path / "x.nc", lag=1)
+
+
+@pytest.mark.parametrize("fixture", ["osw_measurement_nc", "l1b_xsp_nc"])
+def test_entrypoint(fixture, request, tmp_path, capsys):
+    out = tmp_path / "cw.nc"
     rc = entrypoint(
         [
-            "--input-nc-osw",
-            str(osw_measurement_nc),
-            "--input-nc-l1b",
-            str(l1b_xsp_nc),
+            "--input-nc",
+            str(request.getfixturevalue(fixture)),
+            "--cwave-nk",
+            "3",
+            "--cwave-nphi",
+            "3",
+            "--cwave-wlmax",
+            "500",
+            "--cwave-wlmin",
+            "30",
+            "--output-nc",
+            str(out),
         ]
     )
-    assert rc == 1
-    assert "exactly one of" in capsys.readouterr().out
+    assert rc == 0
+    with xr.open_dataarray(out) as cp:
+        assert (cp.sizes["k_gp"], cp.sizes["phi_hf"]) == (3, 3)
+    assert "native" in capsys.readouterr().out
+
+
+def test_entrypoint_errors(ocn_iw1_nc, capsys):
+    assert entrypoint(["--input-nc", "/nonexistent.nc"]) == 1
+    assert entrypoint(["--input-nc", str(ocn_iw1_nc)]) == 1
+    assert "iw_cwaves_map" in capsys.readouterr().out
+
+
+def test_entrypoint_complex_output(l1b_xsp_nc, tmp_path):
+    out = tmp_path / "cw.nc"
+    rc = entrypoint(
+        ["--input-nc", str(l1b_xsp_nc), "--part", "complex", "--output-nc", str(out)]
+    )
+    assert rc == 0
+    with xr.open_dataset(out) as ds:
+        assert {"cwave_params_re", "cwave_params_im"} <= set(ds.data_vars)
+        assert ds.attrs["part"] == "complex"
+        assert np.abs(ds["cwave_params_im"]).max() > 0

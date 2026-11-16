@@ -9,17 +9,18 @@ Two product families are supported (auto-detected from the ``.SAFE`` content):
 
 * **OCN IW measurement** (``s1d_iw_ocn__2s``) : per-subswath ``s1?-iw?-osw-*.nc``
   files. The cross-spectra ``oswCartSpecRe/Im`` are on a **sinh (non-uniform)
-  grid** in units ``m/m`` (cycles/m). They are converted to rad/m and resampled
-  onto a regular grid (see :func:`resample_sinh_to_regular`) before the CWAVE
-  projection, as required by the uniform-grid contract (see
-  ``repository_specifications.md`` section 6.6).
+  grid** in units ``m/m`` (cycles/m). They are converted to rad/m and passed
+  **on their native sinh grid** to :func:`cwaves.compute_cwaves`, which
+  integrates with the exact non-uniform cell areas (no resampling; the grid
+  size may vary from tile to tile).
 * **SARWAVE L1B XSP** (``slc/iw/l1b``) : per-subswath ``l1b-s1?-iw?-xsp-*.nc``
   files. The cross-spectra ``xspectra_{lag}tau_Re/Im`` are already on a uniform
   grid in rad/m and are used as-is.
 
 Both products hold ``intraburst`` and ``interburst`` sub-groups of cross-spectra.
-The computation is fully paper-compliant: one-sided (half) + real modulus
-``|xs|``, no symmetrization (see ``repository_specifications.md`` section 6).
+The CWAVE parameters are computed by the library entry point
+:func:`cwaves.compute_cwaves` (real modulus of the half-plane cross-spectrum,
+see ``repository_specifications.md`` section 6).
 
 Usage::
 
@@ -44,9 +45,8 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import xarray as xr  # noqa: E402
 from matplotlib.colors import Normalize  # noqa: E402
-from scipy.interpolate import RegularGridInterpolator  # noqa: E402
 
-from cwaves.compute_cwaves import compute_cwave_parameters  # noqa: E402
+from cwaves.compute_cwaves import compute_cwaves  # noqa: E402
 from cwaves.config import get_default_config  # noqa: E402
 
 logger = logging.getLogger("cwaves.iw_cwaves_map")
@@ -55,8 +55,6 @@ logger = logging.getLogger("cwaves.iw_cwaves_map")
 SUBSWATHS = ("iw1", "iw2", "iw3")
 #: default polarization per S1 acquisition mode
 DEFAULT_POL_BY_MODE = {"SDV": "VV", "SSV": "VV", "SDH": "HH", "SSH": "HH"}
-#: default number of points of the regular grid used to resample the OCN sinh grid
-DEFAULT_N_GRID = 128
 
 logger.addHandler(logging.StreamHandler(sys.stdout))
 logger.setLevel(logging.INFO)
@@ -126,105 +124,77 @@ def _subswath_files(safe_dir: str, kind: str, pol: str) -> dict[str, Path]:
     return files
 
 
-def resample_sinh_to_regular(
-    spec: xr.DataArray,
-    kx_sinh: np.ndarray,
-    ky_sinh: np.ndarray,
-    kmax: float,
-    n_grid: int = DEFAULT_N_GRID,
-) -> xr.DataArray:
-    """Resample a cartesian cross-spectrum from a sinh (non-uniform) grid to a regular one.
+def _cwave_shape(cwave: dict[str, Any]) -> tuple[int, int]:
+    """Return the ``(Nk, Nphi)`` basis size of a ``cwave_*`` parameter dict."""
+    return int(cwave["cwave_Nk"]), int(cwave["cwave_Nphi"])
 
-    The OCN ``oswCartSpec`` cross-spectra are sampled on a sinh grid
-    (``k = sinh(i * r)``). The CWAVE projection requires a uniform wavenumber
-    grid (``repository_specifications.md`` section 6.6), so the real modulus
-    ``|spec|`` is resampled (scipy ``RegularGridInterpolator``) onto a regular
-    grid spanning ``[0, kmax]`` in range and ``[-kmax, kmax]`` in azimuth.
+
+def ocn_tile_spectrum(ds: xr.Dataset, iaz: int, ira: int, lag: int) -> xr.DataArray:
+    """Complex cross-spectrum of one OCN osw tile on its native sinh grid.
+
+    The ``oswKx`` / ``oswKy`` wavenumbers (cycles/m, ``m/m``) are converted to
+    rad/m; grid lines with NaN wavenumbers (trailing bins of some interburst
+    tiles) are dropped. The result carries the cartesian ``k_rg`` / ``k_az``
+    coordinates expected by :func:`cwaves.compute_cwaves`.
 
     Args:
-        spec: the (complex) cross-spectrum on the sinh grid, dims
-            ``(ky_bin, kx_bin)``.
-        kx_sinh: the (one-sided) sinh range wavenumbers in rad/m.
-        ky_sinh: the (two-sided) sinh azimuth wavenumbers in rad/m.
-        kmax: the maximum wavenumber (rad/m) of the CWAVE domain.
-        n_grid: number of points of the regular grid along each axis.
+        ds: an opened OCN osw group (``intraburst`` / ``interburst``).
+        iaz: ``oswAzSize`` index of the tile.
+        ira: ``oswRaSize`` index of the tile.
+        lag: ``oswLag`` index (ignored if the product has no lag dimension).
 
     Returns:
-        The resampled real-modulus cross-spectrum on the regular grid, dims
-        ``(freq_sample, freq_line)`` with ``k_rg``/``k_az`` coordinates.
+        The complex cross-spectrum ``real + 1j * imag``, dims
+        ``(ky_bin, kx_bin)`` of the product.
     """
-    spec_values = spec.values
-    # drop NaN wavenumber bins (some OCN interburst tiles carry trailing NaN
-    # oswKy bins): the interpolator needs strictly ascending finite coordinates.
-    kx_finite = np.isfinite(kx_sinh)
-    ky_finite = np.isfinite(ky_sinh)
-    kx_sinh = kx_sinh[kx_finite]
-    ky_sinh = ky_sinh[ky_finite]
-    spec_values = spec_values[np.ix_(ky_finite, kx_finite)]
-    # values are (ky, kx); the interpolator grid is (kx, ky)
-    values = np.abs(spec_values).T
-    kx_lin = np.linspace(0.0, kmax, n_grid)
-    ky_lin = np.linspace(-kmax, kmax, n_grid)
-    grid_kx, grid_ky = np.meshgrid(kx_lin, ky_lin, indexing="ij")
-    interpolator = RegularGridInterpolator(
-        (kx_sinh, ky_sinh), values, bounds_error=False, fill_value=0.0
-    )
-    points = np.column_stack([grid_kx.ravel(), grid_ky.ravel()])
-    resampled = interpolator(points).reshape(n_grid, n_grid)
-    return xr.DataArray(
-        resampled.astype(np.complex128),
-        dims=("freq_sample", "freq_line"),
-        coords={"k_rg": ("freq_sample", kx_lin), "k_az": ("freq_line", ky_lin)},
-        name="xspectra_resampled",
-    )
+    tile = {"oswAzSize": iaz, "oswRaSize": ira}
+    real = ds["oswCartSpecRe"].isel(tile)
+    imag = ds["oswCartSpecIm"].isel(tile)
+    if "oswLag" in real.dims:
+        real = real.isel(oswLag=lag)
+        imag = imag.isel(oswLag=lag)
+    spec = real + 1j * imag
+    k_rg = 2.0 * np.pi * np.asarray(ds["oswKx"].isel(tile).values, dtype=float)
+    k_az = 2.0 * np.pi * np.asarray(ds["oswKy"].isel(tile).values, dtype=float)
+    dim_az, dim_rg = spec.dims  # (ky_bin, kx_bin)
+    spec = spec.assign_coords(k_rg=(dim_rg, k_rg), k_az=(dim_az, k_az))
+    return spec.isel({dim_rg: np.isfinite(k_rg), dim_az: np.isfinite(k_az)})
 
 
 def compute_ocn_subswath(
     nc_path: str,
     group: str,
     lag: int,
-    kmax: float,
-    n_grid: int = DEFAULT_N_GRID,
     **cwave: Any,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Compute the CWAVE parameters of every tile of an OCN osw per-subswath file.
+
+    Each tile cross-spectrum is used on its native sinh grid (no resampling).
 
     Args:
         nc_path: path to the ``s1?-iw?-osw-*.nc`` file.
         group: ``"intraburst"`` or ``"interburst"``.
         lag: the ``oswLag`` index (0/1/2, default 2 = 2-tau).
-        kmax: maximum wavenumber (rad/m) of the CWAVE domain.
-        n_grid: number of points of the regular resampling grid.
-        **cwave: ``cwave_*`` parameters for :func:`compute_cwave_parameters`.
+        **cwave: ``cwave_*`` parameters for :func:`cwaves.compute_cwaves`
+            (defaults: packaged ``default_config.yml``).
 
     Returns:
         A tuple ``(lons, lats, params)`` where ``lons``/``lats`` have shape
         ``(oswAzSize, oswRaSize)`` (tile centers) and ``params`` has shape
-        ``(oswAzSize, oswRaSize, k_gp, phi_hf)``.
+        ``(oswAzSize, oswRaSize, cwave_Nk, cwave_Nphi)``.
     """
-    if not cwave:
-        cwave = get_default_config()["cwave"]
+    cwave = {**get_default_config()["cwave"], **cwave}
     with xr.open_dataset(nc_path, group=group) as ds:
         n_az, n_ra = ds.sizes["oswAzSize"], ds.sizes["oswRaSize"]
         lons = ds["oswLon"].values
         lats = ds["oswLat"].values
-        has_lag = "oswLag" in ds["oswCartSpecRe"].dims
-        params = np.full((n_az, n_ra, 4, 5), np.nan)
+        params = np.full((n_az, n_ra, *_cwave_shape(cwave)), np.nan)
         for iaz in range(n_az):
             for ira in range(n_ra):
-                kx = 2.0 * np.pi * ds["oswKx"].isel(oswAzSize=iaz, oswRaSize=ira).values
-                ky = 2.0 * np.pi * ds["oswKy"].isel(oswAzSize=iaz, oswRaSize=ira).values
-                spec = ds["oswCartSpecRe"].isel(oswAzSize=iaz, oswRaSize=ira)
-                im = ds["oswCartSpecIm"].isel(oswAzSize=iaz, oswRaSize=ira)
-                if has_lag:
-                    spec = spec.isel(oswLag=lag)
-                    im = im.isel(oswLag=lag)
-                spec = spec + 1j * im
-                if not (np.isfinite(spec).any()):
+                spec = ocn_tile_spectrum(ds, iaz, ira, lag)
+                if not np.isfinite(spec.values).any():
                     continue
-                xs = resample_sinh_to_regular(spec, kx, ky, kmax, n_grid)
-                cp = compute_cwave_parameters(xs, **cwave)
-                params[iaz, ira] = cp.values
+                params[iaz, ira] = compute_cwaves(spec, **cwave).values
         logger.info(
             "OCN %s: %d x %d tiles computed (lag=%d)",
             os.path.basename(nc_path),
@@ -259,15 +229,15 @@ def compute_sarwave_subswath(
         group: ``"intraburst"`` or ``"interburst"``.
         lag: the cross-spectrum lag (0/1/2, default 2 = 2-tau).
         pol: polarization (``"VV"``/``"HH"``).
-        **cwave: ``cwave_*`` parameters for :func:`compute_cwave_parameters`.
+        **cwave: ``cwave_*`` parameters for :func:`cwaves.compute_cwaves`
+            (defaults: packaged ``default_config.yml``).
 
     Returns:
         A tuple ``(lons, lats, params)`` where ``lons``/``lats`` have shape
         ``(tile_line, tile_sample)`` (tile centers) and ``params`` has shape
-        ``(tile_line, tile_sample, k_gp, phi_hf)``.
+        ``(tile_line, tile_sample, cwave_Nk, cwave_Nphi)``.
     """
-    if not cwave:
-        cwave = get_default_config()["cwave"]
+    cwave = {**get_default_config()["cwave"], **cwave}
     with xr.open_dataset(nc_path, group=group) as ds:
         pol_idx = _sarwave_pol_index(ds, pol)
         n_tl, n_ts = ds.sizes["tile_line"], ds.sizes["tile_sample"]
@@ -283,20 +253,20 @@ def compute_sarwave_subswath(
             f"xspectra_{lag}tau_Im" if f"xspectra_{lag}tau_Im" in ds else "xspectra_Im"
         )
         tau_dim = f"{lag}tau"
-        re = ds[re_var].isel(pol=pol_idx)
-        im = ds[im_var].isel(pol=pol_idx)
-        if tau_dim in re.dims:
-            re = re.mean(dim=tau_dim)
-            im = im.mean(dim=tau_dim)
+        real = ds[re_var].isel(pol=pol_idx)
+        imag = ds[im_var].isel(pol=pol_idx)
+        if tau_dim in real.dims:
+            real = real.mean(dim=tau_dim)
+            imag = imag.mean(dim=tau_dim)
         krg = ds["k_rg"]
         kaz = ds["k_az"]
-        params = np.full((n_tl, n_ts, 4, 5), np.nan)
+        params = np.full((n_tl, n_ts, *_cwave_shape(cwave)), np.nan)
         for itl in range(n_tl):
             for its in range(n_ts):
                 xs = (
                     (
-                        re.isel(tile_line=itl, tile_sample=its, drop=True)
-                        + 1j * im.isel(tile_line=itl, tile_sample=its, drop=True)
+                        real.isel(tile_line=itl, tile_sample=its, drop=True)
+                        + 1j * imag.isel(tile_line=itl, tile_sample=its, drop=True)
                     )
                     .assign_coords(
                         k_rg=krg.isel(tile_line=itl, tile_sample=its),
@@ -306,8 +276,7 @@ def compute_sarwave_subswath(
                 )
                 if not np.isfinite(xs.values).any():
                     continue
-                cp = compute_cwave_parameters(xs, **cwave)
-                params[itl, its] = cp.values
+                params[itl, its] = compute_cwaves(xs, **cwave).values
         logger.info(
             "SARWAVE %s: %d x %d tiles computed (lag=%d, pol=%s)",
             os.path.basename(nc_path),
@@ -398,8 +367,8 @@ def plot_map(
 
 
 def _cwave_kwargs(args: argparse.Namespace) -> dict[str, Any]:
-    """Collect the ``cwave_*`` parameters from the parsed CLI options."""
-    cwave: dict[str, Any] = {}
+    """Collect the ``cwave_*`` parameters (config defaults + CLI overrides)."""
+    cwave: dict[str, Any] = dict(get_default_config()["cwave"])
     if args.cwave_wlmax is not None:
         cwave["cwave_wlmax"] = args.cwave_wlmax
     if args.cwave_wlmin is not None:
@@ -437,12 +406,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--phi-hf", type=int, default=1, help="harmonic index to map (default 1)"
-    )
-    parser.add_argument(
-        "--n-grid",
-        type=int,
-        default=DEFAULT_N_GRID,
-        help="regular grid size for the OCN sinh resampling (default 128)",
     )
     parser.add_argument(
         "--output-png", default=None, help="output PNG path (default: derived)"
@@ -484,11 +447,6 @@ def entrypoint(argv: list[str] | None = None) -> int:
     mode = _mode_from_safe(args.input_safe)
     pol = (args.pol or default_pol(mode)).upper()
     cwave = _cwave_kwargs(args)
-    kmax = (
-        2.0
-        * np.pi
-        / (cwave.get("cwave_wlmin") or get_default_config()["cwave"]["cwave_wlmin"])
-    )
 
     files = _subswath_files(args.input_safe, kind, pol)
     if not files:
@@ -504,7 +462,7 @@ def entrypoint(argv: list[str] | None = None) -> int:
         try:
             if kind == "ocn":
                 results[sub] = compute_ocn_subswath(
-                    str(files[sub]), args.group, args.lag, kmax, args.n_grid, **cwave
+                    str(files[sub]), args.group, args.lag, **cwave
                 )
             else:
                 results[sub] = compute_sarwave_subswath(

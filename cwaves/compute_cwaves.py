@@ -43,301 +43,241 @@ import copy
 import numpy as np
 import xarray as xr
 
+from cwaves.grid import build_quadrature, coordinate_extra_dims
 
-def _check_one_sided(xs):
-    """Raise if ``xs`` is not a one-sided (positive range) cross-spectrum.
 
-    The CWAVE parameters are computed directly on the one-sided (half) range
-    domain, as in Schultz-Stellenfleth et al. (2007) (see
-    ``repository_specifications.md`` section 6). A full / symmetrized spectrum
-    (with negative range wavenumbers) must not be passed. The one-sided
-    domain is a **requirement, not a convenience** :
-
-    * on a full / zero-centered range grid the *same* kernels are only
-      "2-normalized" : their Gram matrix converges to 2I (norm sqrt(2),
-      not 1), so a signal built from the basis round-trips to 2x itself
-      (100 % error, no convergence under refinement) -- verified in
-      ``repository_specifications.md`` section 6.3;
-    * the angular basis {1, sin 2p(phi), cos 2p(phi)} is pi-periodic :
-      orthonormal on any interval of length pi (the one-sided domain maps
-      phi to [0, pi] exactly), but **incomplete** on the full 2pi circle --
-      it spans only the centrally-symmetric spectra, and a generic
-      full-domain spectrum projects to ~0 (same section).
-    """
-    krg_min = float(np.min(np.asarray(xs.k_rg)))
-    if krg_min < 0:
+def _cwave_bounds(cwave_wlmax, cwave_wlmin):
+    """Return ``(kmin, kmax)`` [rad/m] from the wavelength bounds [m]."""
+    if not (cwave_wlmax > cwave_wlmin > 0):
         raise ValueError(
-            "compute_cwave_parameters expects a one-sided (k_rg >= 0) cross-spectrum. "
-            f"A full / symmetrized spectrum was detected (k_rg.min() = {krg_min:.3e}). "
-            "The one-sided (half) range domain is where the kernel basis is orthonormal; "
-            "on a zero-centered grid the Gram matrix converges to 2I (norm sqrt(2), not 1) "
-            "and the pi-periodic angular basis is incomplete for generic (non centrally-"
-            "symmetric) spectra. Compute the CWAVE parameters directly on the one-sided "
-            "range domain, as in Schultz-Stellenfleth et al. (2007); do not symmetrize "
-            "first (see repository_specifications.md sections 6 and 7)."
+            f"need cwave_wlmax > cwave_wlmin > 0, got {cwave_wlmax} / {cwave_wlmin}"
         )
+    return 2.0 * np.pi / cwave_wlmax, 2.0 * np.pi / cwave_wlmin
+
+
+#: what part of the spectrum is projected (see compute_cwaves)
+PARTS = ("modulus", "real", "imag", "complex")
+
+
+def compute_cwaves(
+    spectrum,
+    cwave_wlmax=600,
+    cwave_wlmin=25,
+    cwave_Nk=4,
+    cwave_Nphi=5,
+    part="modulus",
+    **kwargs,
+):
+    """Compute the CWAVE parameters of a spectrum sampled on any supported grid.
+
+    This is the **single entry point** of the library. It evaluates the
+    projections (paper equations 25-26)
+
+    .. math::
+
+        c_{n,p} = \\int_A K_{n,p}(\\mathbf{k})\\, \\hat f(\\mathbf{k})\\,
+        \\mathrm{d}A, \\qquad
+        \\hat f = |f| \\Big/ \\int_{k_{min}<|\\mathbf{k}|<k_{max}} |f|\\,
+        \\mathrm{d}A
+
+    with the quadrature rule of the input grid (:mod:`cwaves.grid`): no
+    resampling of the spectrum is performed. Supported inputs:
+
+    * **cartesian** grid, coordinates ``k_rg`` / ``k_az`` (rad/m), uniform or
+      not (FFT grids, sinh grids...);
+    * **polar** grid, coordinates ``k`` (rad/m) / ``phi`` (radians,
+      ``k_rg = k cos(phi)``), linear or log-spaced ``k``;
+    * either the **half plane** ``k_rg >= 0`` (the paper's domain, on which
+      the kernel basis is orthonormal) or the **full plane**. On the full plane
+      the result is exactly the CWAVE parameters of the centrally-symmetric
+      part ``(f(k) + f(-k)) / 2`` of the spectrum (the kernels are even, so
+      the anti-symmetric part does not contribute) -- see
+      ``repository_specifications.md`` section 6.
+
+    The projected quantity is chosen with ``part`` (the density is always
+    normalised by the mass of the **modulus** ``|f|`` in the annulus, so the
+    four options share the same scale):
+
+    * ``"modulus"`` (default, the 2007 paper): ``|f|`` on the **even**
+      (pi-periodic) harmonics -- the complex phase is discarded;
+    * ``"real"``: ``Re f`` on the even harmonics;
+    * ``"imag"``: ``Im f`` on the **odd** (pi-antiperiodic) harmonics
+      (:func:`harmonic_functions` with ``parity="odd"``);
+    * ``"complex"``: ``c = c_even[Re f] + 1j * c_odd[Im f]``.
+
+    The real part of any SAR cross-spectrum (any lag, 0/1/2-tau) is
+    centrally symmetric and its imaginary part anti-symmetric (Hermitian
+    symmetry of the Fourier transform of a real image): the even harmonics are
+    the natural basis of the former, the odd harmonics of the latter. On a
+    half-plane input this Hermitian structure is *assumed*; on a full-plane
+    input the even (odd) harmonics project the centrally symmetric
+    (anti-symmetric) part of whatever is given. Using the even harmonics on
+    ``Im f`` would converge very slowly (Gibbs effect at the ``k_rg = 0``
+    edge, where ``Im f`` changes sign). Any extra dimension (``pol``,
+    ``time``, ``tile``...) is broadcast.
+
+    Args:
+        spectrum (xarray.DataArray): real or complex spectrum with its
+            wavenumber coordinates.
+        cwave_wlmax (float, optional): maximum wavelength [m], sets
+            ``kmin = 2 pi / cwave_wlmax``.
+        cwave_wlmin (float, optional): minimum wavelength [m], sets
+            ``kmax = 2 pi / cwave_wlmin``.
+        cwave_Nk (int, optional): number of Gegenbauer (radial) functions.
+        cwave_Nphi (int, optional): number of harmonic (angular) functions.
+        part (str, optional): ``"modulus"`` (default), ``"real"``, ``"imag"``
+            or ``"complex"`` (see above).
+
+    Keyword Args:
+        save_cwave_kernel (bool, optional): save the kernel to
+            ``cwaves_kernel.nc`` in the working directory.
+
+    Returns:
+        xarray.DataArray: the CWAVE parameters ``cwave_params``, dims
+        ``(k_gp, phi_hf)`` plus any extra input dimension. Attributes record
+        the detected grid (``grid``) and plane coverage (``coverage``).
+
+    Raises:
+        TypeError / ValueError: unsupported or malformed grid (see
+            :func:`cwaves.grid.build_quadrature`), or a spectrum with zero
+            mass in the wavenumber annulus.
+    """
+    kmin, kmax = _cwave_bounds(cwave_wlmax, cwave_wlmin)
+    cwave = {
+        "cwave_wlmax": cwave_wlmax,
+        "cwave_wlmin": cwave_wlmin,
+        "cwave_Nk": cwave_Nk,
+        "cwave_Nphi": cwave_Nphi,
+        "part": part,
+    }
+    if part not in PARTS:
+        raise ValueError(f"part must be one of {PARTS}, got {part!r}")
+    if isinstance(spectrum, xr.DataArray):
+        extra = coordinate_extra_dims(spectrum)
+        if extra:
+            # one wavenumber grid per tile / time: process slice by slice
+            stacked = spectrum.stack(_cwave_slice=extra)
+            index_names = list(stacked.indexes["_cwave_slice"].names)
+            parts = [
+                compute_cwaves(
+                    stacked.isel(_cwave_slice=i).drop_vars(
+                        ["_cwave_slice", *index_names], errors="ignore"
+                    ),
+                    **cwave,
+                    **kwargs,
+                )
+                for i in range(stacked.sizes["_cwave_slice"])
+            ]
+            out = xr.concat(
+                parts, dim="_cwave_slice", coords="minimal", compat="override"
+            )
+            out = out.assign_coords(
+                _cwave_slice=stacked.indexes["_cwave_slice"]
+            ).unstack("_cwave_slice")
+            out.attrs.update(parts[0].attrs)
+            return out.rename("cwave_params")
+    quad = build_quadrature(spectrum)
+    dims = list(quad.dims)
+
+    # wavenumber annulus kmin < |k| < kmax (circular), used for the
+    # normalisation mass; the kernel itself is NaN outside the elliptic domain A
+    in_annulus = (quad.k_norm > kmin) & (quad.k_norm < kmax)
+    save = kwargs.pop("save_cwave_kernel", False)
+    amplitude = np.abs(spectrum).where(in_annulus)
+    mass = (amplitude * quad.weight).sum(dim=dims, skipna=True)
+    if not bool(np.all(np.isfinite(mass) & (mass > 0))):
+        raise ValueError(
+            "the spectrum has zero (or non-finite) mass in the wavenumber annulus "
+            f"{kmin:.4g} < |k| < {kmax:.4g} rad/m: nothing to normalise. Check "
+            "cwave_wlmax / cwave_wlmin, the wavenumber units (rad/m) and the input."
+        )
+
+    def project(field, parity):
+        with np.errstate(invalid="ignore", divide="ignore"):
+            kernel = compute_kernel(
+                krg=quad.k_rg.where(in_annulus),
+                kaz=quad.k_az.where(in_annulus),
+                kmin=kmin,
+                kmax=kmax,
+                cwave_Nk=cwave_Nk,
+                cwave_Nphi=cwave_Nphi,
+                save_cwave_kernel=save,
+                parity=parity,
+            )
+        density = field.where(in_annulus) / mass
+        return (kernel.cwave_kernel * density * quad.weight).sum(
+            dim=dims, skipna=True, min_count=1
+        )
+
+    if part == "modulus":
+        cwave_parameters = project(amplitude, "even")
+    elif part == "real":
+        cwave_parameters = project(np.real(spectrum), "even")
+    elif part == "imag":
+        cwave_parameters = project(np.imag(spectrum), "odd")
+    else:
+        cwave_parameters = project(np.real(spectrum), "even") + 1j * project(
+            np.imag(spectrum), "odd"
+        )
+
+    name = str(spectrum.name) if spectrum.name is not None else ""
+    loc = name.find("tau")
+    tau = name[loc - 1 : loc + 3] if loc != -1 else None
+    cwave_parameters.attrs.update(
+        {
+            "long_name": "CWAVE parameters" + (" (" + tau + ")" if tau else ""),
+            "grid": quad.kind,
+            "coverage": quad.coverage,
+            "cwave_wlmax": cwave_wlmax,
+            "cwave_wlmin": cwave_wlmin,
+            "part": part,
+        }
+    )
+    return cwave_parameters.rename("cwave_params")
 
 
 # copy from xsarslc commit https://github.com/umr-lops/xsar_slc/commit/14f80b4663d82efe40d2243b65f02a835500d3d7
 def compute_cwave_parameters(
     xs, cwave_wlmax=600, cwave_wlmin=25, cwave_Nk=4, cwave_Nphi=5, **kwargs
 ):
-    """
-    Compute CWAVE parameters.
+    """Compute CWAVE parameters (``xsar_slc``-compatible signature).
 
-    Input contract (fully compliant with the 2007 paper, see
-    ``repository_specifications.md`` section 6):
-
-        - ``xs`` must be a **one-sided (half)** cross-spectrum : positive
-          wavenumbers only in range (``k_rg >= 0``), two-sided in azimuth
-          (``k_az``). A **full / symmetrized** (two-sided range) spectrum is
-          rejected with a ``ValueError``.
-        - Only the **real, non-negative modulus** ``|xs|`` of the spectrum is
-          used : the complex phase is discarded, matching the paper's SAR image
-          variance spectrum (periodogram). The computation is performed directly
-          on the one-sided range domain (no symmetrization), as in
-          Schultz-Stellenfleth et al. (2007) equations 25-26 and B1.
-        - ``xs`` must be sampled on a **uniform (regular) wavenumber grid** in both
-          ``k_rg`` (range) and ``k_az`` (azimuth) : the projection integral uses a
-          single constant cell area (the mean spacing), which is exact only for a
-          uniform grid (see ``repository_specifications.md`` section 6.6).
+    Kept with the historical ``xsar_slc`` signature for API conservativeness
+    (``repository_specifications.md`` section 3); it simply delegates to
+    :func:`compute_cwaves`, which accepts every supported grid. New code should
+    call :func:`compute_cwaves` directly.
 
     Args:
-        xs (xarray.Dataset) : complex ONE-SIDED xspectra (``k_rg >= 0``)
-        cwave_wlmax (float, optional) : maximum wavelength
-        cwave_wlmin (float, optional) : minimum wavelength
-        cwave_Nk (int, optional) :
-        cwave_Nphi (int, optional) :
+        xs (xarray.DataArray) : real or complex spectrum (see :func:`compute_cwaves`)
+        cwave_wlmax (float, optional) : maximum wavelength [m]
+        cwave_wlmin (float, optional) : minimum wavelength [m]
+        cwave_Nk (int, optional) : number of Gegenbauer functions
+        cwave_Nphi (int, optional) : number of harmonic functions
     Keywords Args:
-        kwargs (): keyword arguments passed to compute_kernel
-            save_cwave_kernel (bool, optional) : save CWAVE kernel on disk in working directory
+        save_cwave_kernel (bool, optional) : save CWAVE kernel on disk in working directory
 
     Return:
         (xarray.DataArray) : cwave_parameters
     """
-    kmin = 2.0 * np.pi / cwave_wlmax
-    kmax = 2.0 * np.pi / cwave_wlmin
-    _check_one_sided(xs)
-    loc = xs.name.find("tau")
-    tau = xs.name[loc - 1 : loc + 3] if loc != -1 else None
-
-    # Cross-Spectra Frequency Filtering
-    kk = np.sqrt((xs.k_rg) ** 2.0 + (xs.k_az) ** 2.0)
-    xxs = xs.where(
-        (kk > kmin) & (kk < kmax)
-    )  # drop=True here would remove other dimensions we may want to keep
-    xxs = xxs.dropna(dim="freq_line", how="all").dropna(
-        dim="freq_sample", how="all"
-    )  # removing only along the chosen dimensions
-
-    # Cross-Spectra normalization
-    xxsm = np.abs(xxs)
-    dkrg = xxs.k_rg.diff(dim="freq_sample").mean(
-        dim="freq_sample"
-    )  # works even if there are other dimensions than expected
-    dkaz = xxs.k_az.diff(dim="freq_line").mean(
-        dim="freq_line"
-    )  # works even if there are other dimensions than expected
-    xxsmn = xxsm / (xxsm.sum(dim=["freq_line", "freq_sample"]) * dkrg * dkaz)
-
-    # XS decomposition Kernel
-
-    kernel = compute_kernel(
-        krg=xxs.k_rg,
-        kaz=xxs.k_az,
-        kmin=kmin,
-        kmax=kmax,
+    return compute_cwaves(
+        xs,
+        cwave_wlmax=cwave_wlmax,
+        cwave_wlmin=cwave_wlmin,
         cwave_Nk=cwave_Nk,
         cwave_Nphi=cwave_Nphi,
-        save_cwave_kernel=kwargs.pop("save_cwave_kernel", False),
+        **kwargs,
     )
-    # CWAVE parameters computation
-    cwave_parameters = ((kernel.cwave_kernel * xxsmn) * dkrg * dkaz).sum(
-        dim=["freq_sample", "freq_line"], skipna=True, min_count=1
-    )
-    cwave_parameters.attrs.update(
-        {"long_name": "CWAVE parameters" + (" (" + tau + ")" if tau else "")}
-    )
-    return cwave_parameters.rename("cwave_params")  # .to_dataset()
-
-
-def _polar_k_weights(k):
-    """Per-bin radial cell weights ``w_i`` for a polar ``k dk`` quadrature.
-
-    ``sum_i w_i * f(k_i)`` approximates ``integral f(k) k dk``. The cell
-    boundaries are the geometric means of adjacent sample values, which is
-    exact for a log-spaced grid (where the samples are the cell centres in
-    log-space); the two outer boundaries are extrapolated by half of the
-    adjacent log step.
-    """
-    lnk = np.log(k)
-    lnb = 0.5 * (lnk[1:] + lnk[:-1])
-    lnb = np.concatenate(
-        [
-            [lnk[0] - 0.5 * (lnk[1] - lnk[0])],
-            lnb,
-            [lnk[-1] + 0.5 * (lnk[-1] - lnk[-2])],
-        ]
-    )
-    return 0.5 * (np.exp(2.0 * lnb[1:]) - np.exp(2.0 * lnb[:-1]))
-
-
-def _polar_phi_weights(phi):
-    """Per-bin angular cell widths (periodic, full circle) for a ``dphi`` rule.
-
-    The width of bin ``i`` is the distance to the midpoints of its two
-    neighbours, with the :math:`2\\pi` wrap-around for the first and last bins.
-    For a uniform grid this reduces to the constant :math:`2\\pi/n` for every
-    bin.
-    """
-    n = phi.size
-    if n == 1:
-        return np.array([2.0 * np.pi])
-    d = np.empty(n)
-    d[:-1] = np.diff(phi)
-    d[-1] = phi[0] + 2.0 * np.pi - phi[-1]
-    return 0.5 * (d + np.roll(d, 1))
-
-
-def compute_cwave_parameters_polar(
-    spec, k, phi, cwave_wlmax=600, cwave_wlmin=25, cwave_Nk=4, cwave_Nphi=5, **kwargs
-):
-    """Compute the CWAVE parameters directly on a polar ``(k, phi)`` grid.
-
-    This is the polar-grid counterpart of :func:`compute_cwave_parameters`.
-    It integrates the same CWAVE projection
-    :math:`P_{n,m} = \\int_A K_{n,m}\\, |X_S|_{\\rm norm}\\, \\mathrm{d}A`
-    but **on the native polar wavenumber grid** (e.g. the ESA OCN WV product's
-    ``oswPolSpec``, a real polar spectrum on a log-spaced ``k`` x uniform
-    ``phi`` grid) instead of first resampling the spectrum onto a cartesian
-    (``k_rg``, ``k_az``) grid. The area element is the polar one,
-    :math:`\\mathrm{d}A = k\\, \\mathrm{d}k\\, \\mathrm{d}\\varphi`, so each
-    cell weight is the exact polar cell area :math:`k_i\\, \\Delta k_i\\,
-    \\Delta\\varphi_j` (see :func:`_polar_k_weights` and
-    :func:`_polar_phi_weights`). This avoids the resampling step of
-    :func:`cwaves.client.polar_to_cartesian` and is exact for the product's own
-    (log-)polar sampling.
-
-    The rest of the input contract is identical to
-    :func:`compute_cwave_parameters` (``repository_specifications.md`` section
-    6): the real, non-negative modulus :math:`|spec|` is used (the complex
-    phase is discarded), the integration is over the elliptic wavenumber domain
-    ``A`` (paper equations B1-B13) intersected with the wavenumber annulus
-    :math:`k_{min} < k < k_{max}` and restricted to the **one-sided (half) range
-    domain** :math:`k_x = k\\cos\\varphi \\ge 0` (in polar coordinates the
-    circular annulus :math:`k_{min}<\\sqrt{k_x^2+k_y^2}<k_{max}` is exactly
-    :math:`k_{min}<k<k_{max}`, and the one-sided half is :math:`\\cos\\varphi
-    \\ge 0`). The normalized spectrum has unit mass over that one-sided
-    annulus, as in the cartesian path.
-
-    Args:
-        spec: the (real or complex) polar cross-spectrum, 2-D with shape
-            ``(len(phi), len(k))`` (first index = angle, second = wavenumber
-            magnitude), matching the OCN product's ``oswPolSpec`` layout. Only
-            its modulus is used.
-        k: 1-D array of wavenumber magnitudes (rad/m), strictly positive and
-            strictly increasing. A log-spaced grid is expected (OCN product).
-        phi: 1-D array of angles (rad), strictly increasing, covering the full
-            :math:`2\\pi` circle. The OCN product's ``oswPhi = 0`` is the
-            **range** direction (``k_x = k cos(phi)``).
-        cwave_wlmax (float, optional) : maximum wavelength [m] (sets kmin).
-        cwave_wlmin (float, optional) : minimum wavelength [m] (sets kmax).
-        cwave_Nk (int, optional) : number of Gegenbauer basis functions.
-        cwave_Nphi (int, optional) : number of harmonic basis functions.
-    Keywords Args:
-        kwargs (): keyword arguments passed to :func:`compute_kernel`
-            (e.g. ``save_cwave_kernel``).
-
-    Returns:
-        (xarray.DataArray) : the CWAVE parameters, dims ``(k_gp, phi_hf)``,
-        named ``cwave_params``.
-
-    Raises:
-        ValueError: if the input grids are malformed (non-positive / non-
-            increasing ``k``, ``phi`` not spanning the full circle, shape
-            mismatch) or if the (masked) spectrum carries zero mass.
-    """
-    spec = np.asarray(spec)
-    k = np.asarray(k, dtype=float)
-    phi = np.asarray(phi, dtype=float)
-
-    if spec.ndim != 2:
-        raise ValueError(f"spec must be 2-D (phi, k), got shape {spec.shape}")
-    if k.ndim != 1 or phi.ndim != 1:
-        raise ValueError("k and phi must be 1-D arrays")
-    if k.size < 2 or phi.size < 2:
-        raise ValueError("k and phi must each have at least 2 samples")
-    if spec.shape != (phi.size, k.size):
-        raise ValueError(
-            f"spec shape {spec.shape} does not match (len(phi)={phi.size}, "
-            f"len(k)={k.size})"
-        )
-    if np.any(k <= 0.0):
-        raise ValueError("k must be strictly positive (rad/m)")
-    if np.any(np.diff(k) <= 0.0):
-        raise ValueError("k must be strictly increasing")
-    if np.any(np.diff(phi) <= 0.0):
-        raise ValueError("phi must be strictly increasing")
-    if phi[-1] - phi[0] >= 2.0 * np.pi:
-        raise ValueError("phi must span (but not exceed) one full 2*pi circle")
-
-    kmin = 2.0 * np.pi / cwave_wlmax
-    kmax = 2.0 * np.pi / cwave_wlmin
-
-    # real, non-negative modulus (complex phase discarded), as in
-    # compute_cwave_parameters
-    S = np.abs(spec)
-
-    # one-sided (half) range domain: kx = k cos(phi) >= 0  ->  cos(phi) >= 0.
-    # The tiny tolerance keeps the kx = 0 boundary cells (phi = 90 / 270 deg),
-    # which the cartesian path also integrates (its k_rg = 0 column).
-    one_sided = np.cos(phi) >= -1.0e-6
-    # circular annulus kmin < sqrt(kx^2 + ky^2) < kmax  ==  kmin < k < kmax
-    # in polar coordinates (kk = k)
-    ann = (k > kmin) & (k < kmax)
-
-    # per-cell polar area weights: dA = k dk dphi
-    w = _polar_phi_weights(phi)[:, None] * _polar_k_weights(k)[None, :]
-
-    # unit-mass normalisation over the one-sided annulus (regions outside the
-    # elliptic domain A are included in the mass, exactly as in the cartesian
-    # path, where the kernel's NaN is only applied at the final sum)
-    mask = one_sided[:, None] & ann[None, :] & ~np.isnan(S)
-    mass = float(np.nansum(np.where(mask, S * w, np.nan)))
-    if not np.isfinite(mass) or mass <= 0.0:
-        raise ValueError(
-            "the polar spectrum has zero (or non-finite) mass on the one-sided "
-            "annulus kmin < k < kmax, kx >= 0: nothing to normalise. Check "
-            "cwave_wlmax / cwave_wlmin and the input spectrum."
-        )
-    Snorm = np.where(mask, S * w / mass, np.nan)
-
-    # kernel evaluated at kx = k cos(phi), ky = k sin(phi); compute_kernel
-    # returns NaN outside the elliptic domain A (via sqrt(1 - alpha_k^2)),
-    # which the skipna sum below excludes from the integral
-    kx = k[None, :] * np.cos(phi)[:, None]
-    ky = k[None, :] * np.sin(phi)[:, None]
-    krg = xr.DataArray(kx, dims=("phi", "k"), coords={"phi": phi, "k": k})
-    kaz = xr.DataArray(ky, dims=("phi", "k"), coords={"phi": phi, "k": k})
-    with np.errstate(invalid="ignore"):
-        kernel = compute_kernel(
-            krg=krg,
-            kaz=kaz,
-            kmin=kmin,
-            kmax=kmax,
-            cwave_Nk=cwave_Nk,
-            cwave_Nphi=cwave_Nphi,
-            save_cwave_kernel=kwargs.pop("save_cwave_kernel", False),
-        )
-    cwave_parameters = (
-        kernel.cwave_kernel * xr.DataArray(Snorm, dims=("phi", "k"))
-    ).sum(dim=("phi", "k"), skipna=True, min_count=1)
-    cwave_parameters.attrs.update({"long_name": "CWAVE parameters (polar grid)"})
-    return cwave_parameters.rename("cwave_params")
 
 
 def compute_kernel(
-    krg, kaz, kmin, kmax, cwave_Nk=4, cwave_Nphi=5, save_cwave_kernel=False
+    krg,
+    kaz,
+    kmin,
+    kmax,
+    cwave_Nk=4,
+    cwave_Nphi=5,
+    save_cwave_kernel=False,
+    parity="even",
 ):
     """
     Compute CWAVE kernels
@@ -349,6 +289,7 @@ def compute_kernel(
         cwave_Nk (int) :
         cwave_Nphi (int) :
         save_cwave_kernel (bool, optional) : save CWAVE kernel on disk in working directory
+        parity (str, optional) : angular parity, ``"even"`` (paper, default) or ``"odd"`` (see :func:`harmonic_functions`)
 
     Return:
         (xarray.Dataset) : kernels
@@ -397,7 +338,7 @@ def compute_kernel(
     )
     Fnphi = xr.combine_by_coords(
         [
-            harmonic_functions(alpha_phi, iphi)
+            harmonic_functions(alpha_phi, iphi, parity=parity)
             .assign_coords({"phi_hf": iphi})
             .expand_dims("phi_hf")
             for iphi in np.arange(cwave_Nphi) + 1
@@ -491,16 +432,42 @@ def gegenbauer_polynoms(x, nk, lbda=1.5):
     return Cn
 
 
-def harmonic_functions(x, nphi):
-    """
+#: angular parities of the harmonic basis
+PARITIES = ("even", "odd")
+
+
+def harmonic_functions(x, nphi, parity="even"):
+    """Orthonormal angular functions on any interval of length pi.
+
+    ``parity="even"`` (the 2007 paper, default) gives the pi-**periodic** set
+    ``{1/sqrt(pi), sqrt(2/pi) sin(2 phi), sqrt(2/pi) cos(2 phi), sin(4 phi),
+    cos(4 phi), ...}`` (``nphi`` = 1, 2, 3, ...): kernels built with it are
+    even under ``k -> -k``.
+
+    ``parity="odd"`` gives the pi-**antiperiodic** set ``{sqrt(2/pi)
+    cos(phi), sqrt(2/pi) sin(phi), cos(3 phi), sin(3 phi), ...}``: kernels
+    built with it are odd under ``k -> -k`` (they represent anti-symmetric
+    content, e.g. the imaginary part of a Hermitian cross-spectrum).
+
+    Both sets are orthonormal **and complete** on ``[0, pi]`` (the angular
+    range of the half plane ``k_rg >= 0``); together they form the full
+    Fourier basis of the circle.
 
     Args:
-        x: np.ndarray
-        nphi: int
+        x: angle(s) in radians (np.ndarray or xarray.DataArray).
+        nphi: 1-based index of the function.
+        parity: ``"even"`` (default) or ``"odd"``.
 
     Returns:
-        Fn : np.ndarray
+        Fn : the function evaluated at ``x`` (same type as ``x``).
     """
+    if parity == "odd":
+        m = 2 * ((nphi + 1) // 2) - 1
+        if nphi % 2 == 1:
+            return np.sqrt(2 / np.pi) * np.cos(m * x)
+        return np.sqrt(2 / np.pi) * np.sin(m * x)
+    if parity != "even":
+        raise ValueError(f"parity must be one of {PARITIES}, got {parity!r}")
     if nphi == 1:
         Fn = np.sqrt(1 / np.pi) + x * 0
         return Fn

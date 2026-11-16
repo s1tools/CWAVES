@@ -30,18 +30,28 @@ pytest -c pyproject.toml --cov=cwaves --cov-report=term-missing tests/  # + cove
 
 ## Layout
 
-- `cwaves/compute_cwaves.py` — `compute_cwave_parameters`, `compute_kernel`,
-  `gegenbauer_polynoms`, `harmonic_functions`.
+- `cwaves/compute_cwaves.py` — **single entry point** `compute_cwaves` (any
+  supported grid, half or full plane, `part` = modulus/real/imag/complex),
+  `compute_cwave_parameters` (`xsar_slc` signature, delegates to
+  `compute_cwaves`), `compute_kernel`, `gegenbauer_polynoms`,
+  `harmonic_functions` (`parity` even/odd).
+- `cwaves/grid.py` — grid detection and quadrature (`build_quadrature`):
+  cartesian uniform/non-uniform (`k_rg`/`k_az`), polar linear/log (`k`/`phi`
+  in radians), exact cell areas, half-plane edge handling, explicit errors on
+  malformed inputs. The spectrum is never resampled.
 - `cwaves/symmetrize_xspectra.py` — `symmetrize_xspectrum`.
-- `cwaves/client.py` — CLI client (`cwaves-osw`) computing CWAVE on a one-sided
-  (half) cross-spectrum (roadmap task 9). Two inputs : the SARWave L1B XSP
-  cross-spectrum product (`--input-nc-l1b`, primary) and the ESA OCN WV
-  Sentinel-1 measurement file (`--input-nc-osw`, polar `oswPolSpec` -> cartesian).
+- `cwaves/client.py` — CLI client (`cwaves`) : one input `--input-nc`, schema
+  detected from the variables (`xspectra_*tau_Re/Im` cross-spectrum or OCN
+  `oswPolSpec` on its native polar grid); `--part complex` writes
+  `cwave_params_re/_im`. Tiled (grouped) IW products are rejected with a
+  pointer to the IW map script.
 - `cwaves/scripts/iw_cwaves_map.py` — compute CWAVE on the IW subswaths (iw1/iw2/
   iw3) of a Sentinel-1 IW product and render a georeferenced map. Handles both the
-  OCN IW measurement (`s1?-iw?-osw-*.nc`, sinh grid → resampled to regular, `m/m`
-  → rad/m) and the SARWAVE L1B XSP (`l1b-s1?-iw?-xsp-*.nc`, uniform rad/m). Map
-  rendering needs the `scripts`   extra (cartopy) (roadmap task 10).
+  OCN IW measurement (`s1?-iw?-osw-*.nc`, native sinh grid, cycles/m → rad/m) and
+  the SARWAVE L1B XSP (`l1b-s1?-iw?-xsp-*.nc`, uniform rad/m). Output shape follows
+  `cwave_Nk` x `cwave_Nphi`. Map rendering needs the `scripts` extra (cartopy).
+- `cwaves/scripts/ocn_sinh.py` — report-internal decoder of the OCN sinh
+  cartesian grid (not part of the public API).
 - `cwaves/scripts/plot_kernels.py` — render the CWAVE kernel basis in the
   (kx, ky) wavenumber domain (elliptic domain A, masked outside), as a grid of
   k_gp x phi_hf panels (console script `cwaves-kernels`) (roadmap task 12).
@@ -60,12 +70,13 @@ pytest -c pyproject.toml --cov=cwaves --cov-report=term-missing tests/  # + cove
   `sqrt()` and `eta` is the exact Jacobian with the natural logarithm
   (see `repository_specifications.md` section 5). Do not "simplify" the `eta`
   expression back to the original buggy form.
-- `compute_cwave_parameters` is **fully compliant with the 2007 paper** : it
-  requires a **one-sided (half, `k_rg >= 0`)** cross-spectrum, uses only the
-  real modulus `|xs|`, and computes **without symmetrization** (on the one-sided
-  range domain). A full/symmetrized spectrum is rejected with a `ValueError`
-  (see `repository_specifications.md` section 6). Do not reintroduce the
-  internal symmetrization.
+- Kernels are **even** (pi-periodic harmonics, as in the 2007 paper): on the
+  half plane (`k_rg >= 0`) the basis is complete; on a full plane the result is
+  exactly the CWAVE of the centrally-symmetric part (identical for a Hermitian
+  cross-spectrum). Odd harmonics (`part="imag"`/`"complex"`) encode the
+  anti-symmetric imaginary part. See `repository_specifications.md` sections
+  6, 9, 10 and `docs/limits.rst`. Do not reintroduce resampling (polar ->
+  cartesian, sinh -> regular) nor cell-integrated kernels (evaluated, rejected).
 
 ## Packaging / release
 

@@ -3,8 +3,9 @@
 Welcome to CWAVES
 =================
 
-``cwaves`` is a Python library to compute **CWAVE parameters** from SAR ocean
-cross-spectra, implementing the orthonormal kernel decomposition of :
+``cwaves`` is a Python library to compute **CWAVE parameters** from ocean wave
+and SAR spectra (cartesian or polar grids, half or full plane, real or
+complex), implementing the orthonormal kernel decomposition of :
 
 .. epigraph::
 
@@ -15,11 +16,11 @@ cross-spectra, implementing the orthonormal kernel decomposition of :
    <https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2006JC003970>`_
 
 The CWAVE method retrieves integral ocean wave parameters from SAR data without
-the intermediate step of retrieving the 2D ocean wave spectrum : the
-one-sided cross-spectrum is projected onto a set of orthonormal kernels built
-as tensor products of Gegenbauer polynomials (wavenumber direction) and
-pi-periodic harmonic functions (angle direction), weighted by the Jacobian of
-the wavenumber mapping.
+the intermediate step of retrieving the 2D ocean wave spectrum : the spectrum
+is projected onto a set of orthonormal kernels built as tensor products of
+Gegenbauer polynomials (wavenumber direction) and harmonic functions (angle
+direction), weighted by the Jacobian of the wavenumber mapping. What the
+decomposition can and cannot do is summarised in :ref:`limits`.
 
 Contents
 --------
@@ -29,6 +30,7 @@ Contents
    :caption: Contents
 
    theory
+   limits
    proofs
    installation
    usage

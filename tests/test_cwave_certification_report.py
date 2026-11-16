@@ -145,12 +145,12 @@ def _make_ocn_product(path: str) -> None:
 
     The ``oswCartSpecRe/Im`` are on a sinh (non-uniform) wavenumber grid in
     normalized (``m/m``) units, decoded to a regular rad/m grid by
-    :func:`cwaves.ocn_sinh.compute_ocn_sinh_cartesian`. Single-tile layout
+    :func:`cwaves.scripts.ocn_sinh.compute_ocn_sinh_cartesian`. Single-tile layout
     (no ``oswAzSize`` / ``oswRaSize`` dims) with the calibration inputs the
     decoder needs (``oswKy``, ``oswAziSize``, ``owiIncidenceAngle`` and the
     ``raSamplingFreq`` attribute).
     """
-    from cwaves.ocn_sinh import DEFAULT_GROWTH_RATE
+    from cwaves.scripts.ocn_sinh import DEFAULT_GROWTH_RATE
 
     n_kx, n_ky, n_lag = 16, 9, 3
     growth = DEFAULT_GROWTH_RATE

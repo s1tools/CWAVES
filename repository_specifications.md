@@ -57,17 +57,23 @@ The signatures of the public methods of the lib **must remain identical** to the
 |---------|-----------|
 | `symmetrize_xspectrum` | `symmetrize_xspectrum(xs, dim_range='freq_sample', dim_azimuth='freq_line')` |
 | `compute_cwave_parameters` | `compute_cwave_parameters(xs, cwave_wlmax=600, cwave_wlmin=25, cwave_Nk=4, cwave_Nphi=5, **kwargs)` |
-| `compute_kernel` | `compute_kernel(krg, kaz, kmin, kmax, cwave_Nk=4, cwave_Nphi=5, save_cwave_kernel=False)` |
+| `compute_kernel` | `compute_kernel(krg, kaz, kmin, kmax, cwave_Nk=4, cwave_Nphi=5, save_cwave_kernel=False)` (+ additive `parity="even"`, section 9) |
 | `gegenbauer_polynoms` | `gegenbauer_polynoms(x, nk, lbda=1.5)` |
-| `harmonic_functions` | `harmonic_functions(x, nphi)` |
+| `harmonic_functions` | `harmonic_functions(x, nphi)` (+ additive `parity="even"`, section 9) |
+
+New in this library (no `xsar_slc` counterpart): the single entry point
+`compute_cwaves(spectrum, cwave_wlmax=600, cwave_wlmin=25, cwave_Nk=4, cwave_Nphi=5, part="modulus", **kwargs)`
+(section 8); `compute_cwave_parameters` delegates to it.
 
 ### 3.2 Input/output contracts
 
 - `symmetrize_xspectrum(xs, ...) -> xarray.DataArray | xarray.Dataset`
   - `xs` : complex **one-sided** cross-spectrum (positive wavenumbers only in range)
 - `compute_cwave_parameters(xs, ...) -> xarray.DataArray` (renamed `cwave_params`)
-  - `xs` : complex one-sided cross-spectrum
-  - `kwargs` : arguments passed to `compute_kernel` (e.g. `save_cwave_kernel`)
+  - `xs` : real or complex spectrum with its wavenumber coordinates (any grid
+    accepted by `compute_cwaves`, section 8; the historical input -- a
+    one-sided cartesian cross-spectrum -- is one of them)
+  - `kwargs` : `save_cwave_kernel`, `part`; unrelated `xsar_slc` keywords are ignored
 - `compute_kernel(krg, kaz, kmin, kmax, ...) -> xarray.Dataset`
   - contains `cwave_kernel`, `Gegenbauer_polynoms`, `Harmonic_functions`, `eta`
 - `gegenbauer_polynoms(x, nk, lbda) -> xarray.DataArray`
@@ -153,160 +159,86 @@ Conclusion : the original `xsar_slc` implementation produces **non-orthogonal** 
 
 **Decision : the `CWAVES` lib implements the corrected version (section 5.1 + 5.2), non-configurable (no legacy option).** The method signatures remain identical to `xsar_slc` (section 3) ; only the internal computation of the `Gegenbauer` coefficient and of `eta` changes, which is a **bug fix** and not an API change. Consequently the CWAVE parameters differ from the uncorrected `xsar_slc` output.
 
-## 6. Input contract : one-sided (half) + real, no symmetrization (task 9)
+## 6. Input contract : half or full plane, symmetry (revised 2026-11-16)
 
-The CWAVE parameters must be computed **fully compliant with the 2007 paper**, not
-"conservatively" the way `xsar_slc` does it. This section fixes the input contract
-of `compute_cwave_parameters` and, in particular, **why a symmetrized (full)
-cross-spectrum is not an acceptable input**.
+This section fixes what `compute_cwaves` / `compute_cwave_parameters` integrate
+and why. It replaces the 2026-11-09 version, which **rejected** full-plane
+(symmetrized) inputs; that rejection rested on a correct computation but an
+over-strong interpretation, corrected below.
 
 ### 6.1 What the paper does
 
-The 20 CWAVE parameters are the **projections of the SAR image variance spectrum
-`P` onto the orthonormal functions `h_i`**, integrated over the elliptic wavenumber
-domain `A` (equation 25):
+The CWAVE parameters are the projections of the normalised SAR image variance
+spectrum `P` (a periodogram, equation 32; unit mass, equation 26) onto
+orthonormal functions `h_i` over the elliptic domain `A` (equations 24-25).
+The angular coordinate of the paper spans an interval of length `pi`, so `A`
+is a **half wavenumber plane** (in the library: `k_rg >= 0`, section 4).
 
-```
-S_i = ∫_A P(kx, ky) h_i(kx, ky) dkx dk y        (i = 1, ..., n_phi · n_k)
-```
+### 6.2 Why the half plane is enough -- and what the full plane means
 
-with two essential properties :
+- The angular functions `{1, sin 2p phi, cos 2p phi}` are pi-periodic: they are
+  orthonormal and **complete on any interval of length pi**. The kernels are
+  therefore **even**: `K(-k) = K(k)`.
+- On the **half plane** the basis represents any function given there.
+- On the **full plane** the same kernels have norm `sqrt(2)` (Gram -> 2I, the
+  2026-11-09 measurement) and span only **centrally-symmetric** functions. This
+  is a normalisation and a symmetry statement, not an inconsistency: integrated
+  over the full plane and divided by the full-plane mass, the kernels return
+  **exactly** the CWAVE parameters of the centrally-symmetric part
+  `(f(k) + f(-k)) / 2` (verified: polar full circle vs even part on the half
+  circle, 4e-16).
+- A SAR image is real, so every cross-spectrum (any lag) is **Hermitian**,
+  `X(-k) = conj X(k)`: `|X|` and `Re X` are centrally symmetric, `Im X` is
+  anti-symmetric. For these inputs the half plane holds all the information
+  and the half-plane and full-plane results coincide (L1B XSP asset: 0.23 %,
+  the residual being the last `k_rg` column dropped by `symmetrize_xspectrum`).
+- A **directional** spectrum (180 deg ambiguity removed: WW3, OCN
+  `oswPolSpec`) is not centrally symmetric; its paper CWAVE parameters are
+  those of its centrally-symmetric part. The former polar path, which kept only
+  `cos(phi) >= 0`, discarded the waves travelling towards negative range;
+  it has been removed.
 
-1. **`P` is a real, non-negative spectrum.** `P` is the **periodogram** of the
-   (normalized) SAR imagette — "The periodogram of the wave mode imagette computed
-   using an FFT algorithm is used as an estimate of P" (equation 32) — normalized to
-   unit integral over `A` (equation 26). A periodogram is `|FFT|²` : **real and
-   non-negative**. The paper **never** uses a complex cross-spectrum nor its phase.
+### 6.3 The input contract
 
-2. **The integration domain `A` is a half wavenumber plane.** Equation B1 maps `A`
-   onto the rectangle `B = [-1, 1] × [-π/2, π/2]`, with the angular coordinate
-   `α_φ(kx, ky) = arctan(ky, kx) ∈ [-π/2, π/2]`. This range is only valid for
-   `kx ≥ 0`, so `A` is **one-sided in the range wavenumber (`kx`) and two-sided in
-   the azimuth wavenumber (`ky`)**. The orthonormality of the functions `h_i`
-   (equation 24) is defined over this half domain `A`, **not** over the full plane.
+- a real or complex `xarray.DataArray` with **either** the cartesian
+  coordinates `k_rg`, `k_az` (rad/m) **or** the polar coordinates `k` (rad/m),
+  `phi` (radians, `k_rg = k cos(phi)`), each 1-D along its own dimension;
+- covering the half plane (`k_rg >= 0`, or `phi` in `[-pi/2, pi/2]`) or the
+  full plane (`k_rg` symmetric around 0 to one cell, or the full circle);
+- by default (`part="modulus"`, the paper) only `|f|` is projected; see
+  section 9 for the complex extension.
 
-### 6.2 The input contract of `compute_cwave_parameters`
+Explicit errors (`ValueError` / `TypeError`) are raised for: not a
+`DataArray`; no supported coordinate pair (or both); NaN, non-monotonic or
+single-sample axes; `phi` spanning `>= 2 pi` (degrees); a partial plane
+coverage (asymmetric negative `k_rg`, a `phi` arc crossing both half planes
+without being the full circle, or only `k_rg < 0` directions); zero mass in
+the annulus. A wavenumber axis varying along an extra dimension (one `k_rg`
+per tile, as in the `xsar_slc` mocks) is processed slice by slice.
 
-`compute_cwave_parameters(xs, ...)` therefore requires :
+### 6.4 Half-plane edge
 
-- **`xs` : a one-sided (half) cross-spectrum** — positive wavenumbers only in range
-  (`k_rg >= 0`), two-sided in azimuth (`k_az`). This is exactly the domain `A` of
-  the paper (with the lib axis convention of section 4 : `kx = k_rg = range`,
-  `ky = k_az = azimuth`).
-- **Only the real, non-negative modulus `|xs|` is used** : the complex phase is
-  discarded, matching the paper's real image variance spectrum. `xs` may be passed
-  as a complex cross-spectrum (Re/Im) or directly as its real modulus.
-- **`xs` must be sampled on a uniform (regular) wavenumber grid** in both `k_rg`
-  (range) and `k_az` (azimuth) — see section 6.6.
+On a half-plane grid the cells are fitted to the `k_rg = 0` edge: the cell of a
+`k_rg = 0` sample keeps only its `k_rg >= 0` half, and a grid starting at
+`k_rg = dk` (SARWave L1B XSP, whose `k_rg = 0` column is dropped) has its first
+cell extended to 0. Without this, the `[0, dk/2]` strip was missing from the
+half-plane integral: this was the origin of the ~2.4 % "symmetrization" gap
+reported in the 2026-11-09 version. The library values on the L1B XSP asset
+change by 2.3 % accordingly, and now equal the full-plane (symmetrized) values.
 
-The computation is performed **directly on the one-sided range domain, without any
-symmetrization** (the `symmetrize_xspectrum` step that the `xsar_slc` reference
-inserted before the projection has been **removed**).
+### 6.5 Quadrature on the native grid (no uniform-grid requirement)
 
-### 6.3 Why a symmetrized (full) spectrum is not a good input
-
-`xsar_slc` symmetrizes the one-sided input to a full two-sided spectrum before the
-projection. This is a deviation from the paper and is rejected by this lib for the
-following reasons :
-
-1. **Wrong integration domain.** The paper integrates over the half domain `A`
-   (equations 24, 25). Symmetrizing turns the integration domain into the full 2D
-   plane, on which the kernels `h_i` are **not** orthonormal (their norm is doubled,
-   since they are antipodally even). The resulting coefficients are therefore **not**
-   the paper's `S_i`. This is not just a theoretical objection — it was verified
-   numerically on 2026-11-09 (published investigation note, linked below in
-   section 7): on a zero-centered `k_rg` grid the Gram matrix of the *same* kernel
-   basis converges to **2I** (diagonal → 2, off-diagonal → 0, to quadrature
-   accuracy), an in-span signal round-trips to **2× itself** (100 % relative
-   error, no convergence under refinement), and an asymmetric spectrum (a
-   Gaussian not centered on the origin) is **lost ≈ 100 %** with no improvement
-   under refinement. The second effect — incompleteness — is the one that
-   actually destroys the information: the angular basis {1, sin 2p(φ), cos
-   2p(φ)} is π-periodic, orthonormal on any interval of length π (the
-   one-sided domain gives φ ∈ [0, π] exactly) but spans, on the full 2π
-   circle, **only the centrally-symmetric subspace** of spectra.
-
-2. **Distorted first (DC) range-bin weighting.** A one-sided FFT spectrum carries a
-   single DC bin (`k_rg = 0`) and the standard one-sided weighting. Symmetrization
-   rebuilds a two-sided grid (`2n − 2` points) and re-weights the DC bin and the grid
-   edges. Measured on a real SARWave L1B XSP product, computing on the symmetrized
-   full grid instead of the one-sided half grid shifts the CWAVE parameters by
-   **≈ 2.4 %** (relative). This is exactly the "specific weighting on the first bin
-   in range" that symmetrization was introduced to avoid — i.e. it changes the result
-   instead of preserving the paper's definition.
-
-3. **Unnecessary.** The integrand is the real modulus `|xs|` (antipodally even for a
-   real image) multiplied by kernels that are antipodally even (the angular basis is
-   made of π-periodic harmonics, so `h_i(k_rg, k_az) = h_i(−k_rg, −k_az)`). The
-   one-sided range domain `A` is therefore **complete** : the π-periodic harmonics
-   already span the whole wave-direction range on `k_rg >= 0`. Symmetrization only
-   appends the redundant mirrored half and buys nothing except the artifacts of
-   points 1 and 2.
-
-4. **Obscures the paper's structure.** The clean "orthonormal basis on `A`,
-   coefficients = projections" formulation (equations 24–26) only holds when the
-   integration is performed over `A`. Symmetrizing breaks that structure.
-
-### 6.4 Hardening in the code
-
-`compute_cwave_parameters` guards the input with `_check_one_sided(xs)` : if the
-spectrum carries negative range wavenumbers (`k_rg.min() < 0`, i.e. a full /
-symmetrized spectrum was passed) it raises a `ValueError` instead of silently
-computing on the wrong domain. `symmetrize_xspectrum` is kept as a **standalone
-utility** (its signature is part of section 3), but its output is **not** an
-accepted input of `compute_cwave_parameters`.
-
-### 6.5 Consequences
-
-- The CWAVE parameters of this lib differ from the `xsar_slc` reference values by
-  the ≈ 2.4 % of section 6.3 (the `xsar_slc` values were produced on the
-  symmetrized full grid). This is **intentional** : the goal is compliance with the
-  2007 paper, not agreement with the `xsar_slc` reference.
-- The public method signatures are unchanged (section 3). The change is internal to
-  `compute_cwave_parameters` (removal of the symmetrization step + the one-sided
-  guard) and is a **paper-compliance fix**, not an API change.
-
-### 6.6 The wavenumber grid must be uniform (regular) in `k_rg` and `k_az`
-
-The projection integral (equation 25) is approximated by a **rectangle rule with a
-single constant cell area**. In `compute_cwave_parameters` the cell area is computed
-once as the **mean spacing** along each axis :
-
-```python
-dkrg = xxs.k_rg.diff(dim="freq_sample").mean(dim="freq_sample")
-dkaz = xxs.k_az.diff(dim="freq_line").mean(dim="freq_line")
-cwave = ((kernel * xxsmn) * dkrg * dkaz).sum(dim=["freq_sample", "freq_line"], ...)
-```
-
-The kernel `h_i` is **evaluated at the true grid coordinates** (`alpha_k` and
-`alpha_phi` are functions of the actual `k_rg` / `k_az` values), so a non-uniform
-grid is not rejected — but the **integration weight `dkrg · dkaz` is only exact when
-the grid is uniform** in both axes :
-
-- **Uniform grid** → `mean(diff)` equals the constant spacing → `dkrg · dkaz` is the
-  exact cell area → the projection is correct.
-- **Irregular grid** → the kernel is still at the right points, but the constant
-  weight is only the *average* spacing → the CWAVE integral is **biased** (small for
-  mild irregularity, large for a strongly non-linear grid, e.g. log-spaced). The
-  computation does not fail; the result is simply wrong.
-
-Therefore the input `xs` **must be sampled on a uniform wavenumber grid in both
-`k_rg` (range) and `k_az` (azimuth)**. This is a natural, not extra, assumption :
-the paper's `P` is the periodogram of the imagette on a regular FFT grid (equation
-32), so a uniform wavenumber grid is exactly the sampling the method is defined for.
-
-In practice the supported inputs all satisfy this :
-
-| input | grid | uniform? |
-|-------|------|:--------:|
-| SARWave L1B XSP (`--input-nc-l1b`) | `k_rg` / `k_az` (rel. std of spacing ≈ 1e-6) | ✓ |
-| OCN WV measurement (`--input-nc-osw`) | `polar_to_cartesian` resamples onto `np.linspace` (rel. std 0) | ✓ |
-
-Note : the `kmin/kmax` frequency mask plus `dropna` (see section 6.2) keeps a
-contiguous sub-block of the grid, which preserves uniformity. A non-uniform input
-(e.g. the OCN product's own `oswKx`/`oswKy`, rel. std of spacing ≈ 1) **must not** be
-fed directly to `compute_cwave_parameters` ; it must first be resampled onto a
-uniform grid (as `polar_to_cartesian` does for the polar `oswPolSpec`).
+The projection is evaluated with a **point rule with exact cell areas** on the
+input grid (module `cwaves/grid.py`): cell boundaries at the mid-points between
+samples; cartesian area `dk_rg * dk_az`; polar area `(k_+^2 - k_-^2)/2 * dphi`
+(geometric boundaries for a log-uniform `k`, periodic `phi` cells on the full
+circle). The former requirement of a uniform cartesian grid (constant mean
+spacing as cell area) is lifted: sinh grids (OCN `oswCartSpec`, IW tiles of
+varying size) and polar grids are integrated as they are, **without
+resampling**. Verified: one analytic spectrum on a fine cartesian grid, a
+70 x 139 sinh grid and an 80 x 144 log-polar grid -> same parameters to 2e-6;
+the cartesian uniform half-plane path reproduces the previous implementation to
+1e-7 apart from the edge fix of section 6.4.
 
 ## 7. Continuum orthonormality (verified 2026-11-09)
 
@@ -337,8 +269,14 @@ With the orthonormality integral of Gradshteyn & Ryzhik (7th ed., 2000, section
 7.313),
 
 ```
-I_n = integral_{-1}^{1} (1 - x^2) C_n^(3/2)(x)^2 dx  =  4/3 (n = 0),  2 (n + 1)(n + 2)/(2 n + 3) (n >= 1)
+I_n = integral_{-1}^{1} (1 - x^2) C_n^(3/2)(x)^2 dx  =  2 (n + 1)(n + 2)/(2 n + 3)   for every n >= 0  (n = 0: 4/3)
 ```
+
+(G&R 7.313 with lambda = 3/2: `pi 2^(1-2 lambda) Gamma(n + 2 lambda) / (n! (n + lambda) Gamma(lambda)^2)`.)
+Equivalently `sqrt(1 - x^2) C_n^(3/2)(x)` is proportional to the associated
+Legendre function `P^1_{n+1}(x)` (G&R 7.112, norm `2 l (l+1)/(2 l+1)` with
+`l = n+1`): the radial functions `G_n` are exactly the normalised `P^1_{n+1}`
+(checked to 2e-15, 2026-11-16).
 
 the code's coefficient satisfies `coef(n)^2 * I_n = 1` **exactly for every n**.
 Verified : the polynomials of the code's recurrence match
@@ -350,11 +288,13 @@ deviates from the identity by <= 2e-4 (12x12, X6).
 
 ### 7.3 Angular factor : pi-periodic harmonics
 
-`F` is orthonormal on **any interval of length pi** ; the one-sided range
-domain gives `phi in [0, pi]` exactly, which is where the design lives. On a
-zero-centered grid (`phi in [-pi, pi]`) the set remains orthogonal but its norm
-is doubled (Gram -> 2I) and it is complete only for the centrally-symmetric
-spectra — the verified facts of section 6.3.
+`F` is orthonormal and complete on **any interval of length pi** ; the
+half-plane range domain gives `phi in [0, pi]` exactly. On a zero-centered grid
+(`phi in [-pi, pi]`) the set remains orthogonal but its norm is doubled
+(Gram -> 2I) and it spans only the centrally-symmetric spectra; integrating
+over the full plane with the full-plane mass therefore yields the CWAVE
+parameters of the centrally-symmetric part (section 6.2). The odd (pi-
+antiperiodic) set of section 9 spans the anti-symmetric part.
 
 ### 7.4 The Jacobian identity eta^2 * J = 1 (exact)
 
@@ -408,90 +348,98 @@ error to the theoretical quadrature error** : the idempotence error must halve
 doubling), which is the discrete signature of a consistent first-order
 quadrature of the exact continuum basis verified in this section.
 
-## 8. Polar-grid computation contract (verified 2026-11-11)
+## 8. Single entry point and client (2026-11-16)
 
-`compute_cwave_parameters_polar` (library) and `compute_cwaves_from_osw_polar`
-/ the CLI flag `--polar-direct` (client) compute the CWAVE parameters directly
-on a polar `(k, phi)` wavenumber grid — the OCN WV product's native
-`oswPolSpec` (log-spaced `oswK` x uniform `oswPhi`) — **without resampling to a
-cartesian grid**. The default OCN path (`--input-nc-osw` without
-`--polar-direct`) still goes through `polar_to_cartesian` ; its behaviour is
-unchanged.
+Answer to the PR #5 review (generic library, no product a priori, no
+misleading entry points):
 
-### 8.1 Same projection, polar quadrature
+- **Library**: one entry point, `compute_cwaves(spectrum, ...)`, grid and
+  coverage detected from the coordinates (section 6). `compute_cwave_parameters`
+  keeps the `xsar_slc` signature and delegates to it.
+- **Client**: one function, `compute_cwaves_from_file(path, lag=2, pol=0,
+  **cwave)`, and one CLI, `cwaves --input-nc <file>` (`--lag`, `--pol`,
+  `--part`, `--cwave-*`, `--output-nc`). The schema is detected from the
+  variables of the file, never from its name: `xspectra_{lag}tau_Re/Im` on
+  `k_rg`/`k_az` -> one parameter set per `time`; `oswPolSpec` on
+  `oswK`/`oswPhi` (degrees converted) -> native polar grid. Files whose spectra
+  are stored in NetCDF groups (tiled IW products) are rejected with a pointer
+  to `cwaves.scripts.iw_cwaves_map`, which processes them tile by tile on the
+  native (sinh or uniform) grid; its output size follows `cwave_Nk x
+  cwave_Nphi`.
+- **Removed** (introduced earlier in this PR, never released, hence no
+  deprecation period under section 3.3): `compute_cwave_parameters_polar`,
+  `compute_cwaves_from_l1b`, `compute_cwaves_from_osw`,
+  `compute_cwaves_from_osw_polar`, `polar_to_cartesian` (issue #11),
+  `resample_sinh_to_regular`, the CLI `cwaves-osw` and its flags
+  `--input-nc-osw / --input-nc-l1b / --polar-direct / --n-range /
+  --n-azimuth`, and `--n-grid` of the IW script.
+- The IFREMER sinh -> linear decompressor (`cwaves/scripts/ocn_sinh.py`) is
+  kept only as a tool of the certification report; it is not needed to compute
+  CWAVE parameters.
 
-The projection is the same 2-D integral as section 6 :
+## 9. Complex extension: odd harmonics (2026-11-16)
 
-```
-P_{n,m} = integral K_{n,m}(kx, ky) * |X_S|_norm dA
-         over R = A  intersect  { kmin < sqrt(kx^2 + ky^2) < kmax }  intersect  { kx >= 0 }
-```
+`harmonic_functions(x, nphi, parity="odd")` gives the pi-antiperiodic set
+`{sqrt(2/pi) cos(m phi), sqrt(2/pi) sin(m phi)}, m = 1, 1, 3, 3, 5, ...` --
+orthonormal and complete on `[0, pi]`, odd under `k -> -k`. The radial factor
+`G_n` and `eta` are unchanged: the extension stays within the Gradshteyn &
+Ryzhik construction (radial part) and the plain Fourier basis (angular part;
+even and odd sets together = the full Fourier basis of the circle).
 
-In polar coordinates `kx = k cos(phi)`, `ky = k sin(phi)` (the OCN
-`oswPhi = 0` is the **range** direction, the same convention as
-`polar_to_cartesian` : `phi_query = arctan2(k_az, k_rg)`):
+`compute_cwaves(..., part=...)`:
 
-- the circular annulus `kmin < sqrt(kx^2 + ky^2) < kmax` is exactly
-  `kmin < k < kmax` (the radial sample is the cell centre),
-- the one-sided half `kx >= 0` is `cos(phi) >= 0`, tested with a `-1e-6`
-  tolerance so that the `kx = 0` boundary cells are kept despite the ~1e-8 rad
-  floating-point noise of the product's `oswPhi` grid (the nearest interior
-  cell has `|cos| >= sin(5 deg) = 0.087`, so the tolerance cannot leak),
-- the area element is `dA = k dk dphi` and the per-cell weight is
-  `w_ij = w^k_i * w^phi_j` :
-  - `w^k_i = (k_{i+1/2}^2 - k_{i-1/2}^2) / 2` with cell boundaries at the
-    geometric mean of adjacent samples (exact for the OCN log-spaced grid,
-    where the samples are the cell centres in log-space) and the two outer
-    boundaries extrapolated by half of the adjacent log step,
-  - `w^phi_j` : periodic cell widths (the constant `2*pi/n` for the OCN
-    uniform grid).
+| `part` | projected | harmonics |
+|--------|-----------|-----------|
+| `"modulus"` (default, paper) | `abs(f)` | even |
+| `"real"` | `Re f` | even |
+| `"imag"` | `Im f` | odd |
+| `"complex"` | `Re f` + 1j `Im f` | even + 1j odd |
 
-### 8.2 Same input contract as the cartesian path
+All are normalised by the mass of `abs(f)`. Rationale: `Im X` of a Hermitian
+cross-spectrum changes sign across the `k_rg = 0` edge, which the even set
+cannot follow (Gibbs): on a smooth synthetic spectrum the imaginary part is
+reconstructed to 4e-5 (33 odd harmonics) vs 0.26 (33 even). On the real L1B
+XSP asset `Im X` is 8-15 % of `Re X` and noise / out-of-span dominated (both
+bases reach ~0.5 relative L2), but the imaginary parameters scale with the lag
+(2-tau / 1-tau slope 1.96-1.99, correlation >= 0.996; real parameters change by
+2-3 %): they carry the propagation information of the cross-spectrum phase.
+The CLI writes complex parameters as `cwave_params_re` / `cwave_params_im`
+(NetCDF has no complex type).
 
-- only the real, non-negative modulus `|spec|` is used (complex phase
-  discarded),
-- the unit-mass normalisation is over (one-sided half) intersect (annulus)
-  intersect (non-NaN spectrum) : cells outside the elliptic domain `A` stay in
-  the mass and are excluded from the integral by the kernel's NaN mask —
-  exactly as in the cartesian path, where the kernel's NaN is applied only at
-  the final `skipna` sum,
-- `compute_kernel` is evaluated at the 2-D `(kx, ky)` fields (it returns NaN
-  outside `A` via `nu(alpha_k) = sqrt(1 - alpha_k^2)`).
+## 10. Limits and implementation choices (2026-11-16)
 
-Validation (ValueError) : `spec` must be 2-D of shape `(len(phi), len(k))`,
-`k` strictly positive and strictly increasing (>= 2 samples), `phi` strictly
-increasing with span < 2*pi (>= 2 samples), and the masked spectrum must carry
-a positive finite mass on the one-sided annulus.
+The user-facing version is `docs/limits.rst`. Summary, with the evidence
+(scripts and logs under `/scratch/agrouaze/opencode_sandbox/tmp_data/cwave_s{1,2,3,4}/`):
 
-### 8.3 Measured agreement (S1A WV1 OCN asset, 2026-11-11)
-
-- polar-direct (native 72 x 60) vs cartesian (128 x 128) : all 20 default
-  parameters agree within `|diff| <= 0.5 + 20% * |cartesian|` (the unit-test
-  tolerance) ; largest absolute difference 0.73 (`k_gp=1, phi_hf=5`, value
-  -8.43), largest relative difference 49 % (the smallest-magnitude parameter,
-  `k_gp=4, phi_hf=3`, value -0.88) ; every parameter of magnitude above 5
-  agrees within 9.3 % relative.
-- the cartesian path converges toward a fine-grid polar reference (720 x 512,
-  the native spectrum interpolated in (ln k, phi)) as the resampling grid is
-  refined : rms relative difference 38 % (32 x 64) -> 10 % (128 x 128) ->
-  3 % (512 x 1024). The native polar quadrature is in the same range
-  (rms 13 %) : the residual is the product's own 72 x 60 sampling error,
-  shared by both paths. The polar path integrates the product's samples as
-  exact polar bins (no interpolation step), whereas every cartesian path
-  first interpolates the same 4320 samples.
-- on a smooth synthetic spectrum (directional Gaussian), polar 300 x 360 vs
-  cartesian 400 x 800 agree to max relative 7.5 % (on near-zero parameters
-  only) ; unit-test tolerance `rtol = 0.10, atol = 0.01`.
-- kernel orthonormality on the polar grid : the Gram matrix of the
-  paper-parameter kernels (3 x 3) on a polar log grid has off-diagonal entries
-  below 5 % of the mean diagonal (`tests/test_compute_cwave_polar.py::
-  test_polar_kernel_orthonormality`).
-
-### 8.4 API conservatism
-
-Purely additive (section 1.2) : no existing signature was touched. New public
-symbols : `cwaves.compute_cwave_parameters_polar`,
-`cwaves.compute_cwaves_from_osw_polar` (exported in `cwaves/__init__.py`);
-new private helpers `_polar_k_weights`, `_polar_phi_weights` in
-`cwaves/compute_cwaves.py`; new CLI flag `--polar-direct` on the
-`--input-nc-osw` path of `cwaves-osw`.
+1. **Not a bijection**: a projection onto `Nk x Nphi` functions; the
+   orthogonal complement is lost; the loss vanishes only in the continuum
+   limit (complete basis).
+2. **Even part only** (paper parameters): directional information requires the
+   odd harmonics (`part="imag"/"complex"`).
+3. **Finite elliptic domain**: energy outside `A` is in the mass but not
+   represented; `G_n` vanish on the `kmin` / `kmax` ellipses; product grids
+   that do not cover `A` (L1B WV XSP: `abs(k_az) <= 0.057` rad/m) cut it
+   (discrete Gram deviation ~0.39 already at 4 x 5).
+4. **Unit-mass normalisation**: energy level (Hs-like information) is not in
+   the parameters.
+5. **Quadrature error** grows with the kernel order (U-shaped round trip on a
+   fixed grid, section 7).
+6. **Cell-integrated kernels evaluated, not adopted**: integrating the kernels
+   exactly over each cell (spectrum constant per cell) is less accurate on
+   smooth spectra (max relative error 1.2e-3 to 2.3e-3 vs 7e-5 to 1.7e-3 for
+   the point rule, 4 x 5 to 32 x 30), does not bring the discrete Gram closer to
+   I, changes the real-product round trip by < 1.5 % up to 32 x 30 (0.160 ->
+   0.145 at 32 x 30) and costs 50-100 x more. What mattered was the exact
+   cell **areas** (section 6.5).
+7. **Reconstruction** (prototype, not in the library): a maximum-entropy
+   solution `g = m exp(l0 + sum l_i K_i)` (Newton on the convex dual) that
+   reproduces the parameters exactly (residual <= 1e-6) and is non-negative
+   halves to quarters the L2 error of the linear reconstruction `sum c_i K_i`
+   (OCN polar even part: 0.64 -> 0.32 at 4 x 5, 0.20 -> 0.055 at 16 x 16;
+   L1B XSP: 0.55 -> 0.42, 0.29 -> 0.17), peak recovered exactly from 16 x 16.
+   With noisy parameters the constraints must be regularised at ~10x the noise
+   level (16 x 16, 5 % noise: 0.20 -> 0.10); under-regularised it is worse
+   than the linear solution. It adds a prior, not information.
+8. **Memory**: `compute_kernel` materialises `Nk * Nphi` kernels on the whole
+   grid (1301^2 grid x 48 x 40 basis ~ 26 GB); product grids (~1e4 samples)
+   are far from this limit.

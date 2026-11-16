@@ -5,10 +5,9 @@ import pytest
 import xarray as xr
 from cwaves.compute_cwaves import compute_cwave_parameters
 from cwaves.config import get_default_config
-from cwaves.ocn_sinh import (
+from cwaves.scripts.ocn_sinh import (
     _physical_scale,
     _sinh2linear_mapper,
-    compute_cwaves_from_ocn_sinh,
     compute_ocn_sinh_cartesian,
     reconstruct_full_cart_spec,
 )
@@ -114,13 +113,6 @@ def test_compute_ocn_sinh_cwave(osw_measurement_nc):
         cp = compute_cwave_parameters(xs, **cfg)
     assert cp.sizes["k_gp"] == cfg["cwave_Nk"]
     assert cp.sizes["phi_hf"] == cfg["cwave_Nphi"]
-    assert np.isfinite(cp.values).all()
-
-
-def test_compute_cwaves_from_ocn_sinh_cli(osw_measurement_nc):
-    cp = compute_cwaves_from_ocn_sinh(str(osw_measurement_nc), lag=2)
-    assert cp.sizes["k_gp"] == 4
-    assert cp.sizes["phi_hf"] == 5
     assert np.isfinite(cp.values).all()
 
 

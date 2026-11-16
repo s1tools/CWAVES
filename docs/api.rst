@@ -6,6 +6,8 @@ The public API is exposed at the top level of the :mod:`cwaves` package.
 Core
 ----
 
+.. autofunction:: cwaves.compute_cwaves
+
 .. autofunction:: cwaves.compute_cwave_parameters
 
 .. autofunction:: cwaves.compute_kernel
@@ -14,14 +16,29 @@ Core
 
 .. autofunction:: cwaves.harmonic_functions
 
-Clients (Sentinel-1 products)
------------------------------
+Grids and quadrature
+--------------------
 
-.. autofunction:: cwaves.compute_cwaves_from_l1b
+.. automodule:: cwaves.grid
+   :no-members:
 
-.. autofunction:: cwaves.compute_cwaves_from_osw
+.. autofunction:: cwaves.grid.build_quadrature
 
-.. autofunction:: cwaves.client.polar_to_cartesian
+.. autoclass:: cwaves.grid.Quadrature
+   :members: k_norm
+
+.. autofunction:: cwaves.grid.cell_bounds
+
+.. autofunction:: cwaves.grid.polar_k_weights
+
+Client (NetCDF files)
+---------------------
+
+.. autofunction:: cwaves.compute_cwaves_from_file
+
+.. autofunction:: cwaves.client.detect_schema
+
+.. autofunction:: cwaves.client.polar_spectrum
 
 Utilities
 ---------
@@ -55,6 +72,6 @@ The scripts are importable modules with an :func:`~entrypoint` callable.
 
   .. autofunction:: cwaves.scripts.iw_cwaves_map.compute_sarwave_subswath
 
-  .. autofunction:: cwaves.scripts.iw_cwaves_map.resample_sinh_to_regular
+  .. autofunction:: cwaves.scripts.iw_cwaves_map.ocn_tile_spectrum
 
   .. autofunction:: cwaves.scripts.iw_cwaves_map.plot_map

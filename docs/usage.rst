@@ -6,75 +6,95 @@ Usage
 Quick start (Python API)
 ------------------------
 
-Compute the CWAVE parameters from a **one-sided (positive range)** complex
-cross-spectrum :
+The library has **one entry point**, :func:`cwaves.compute_cwaves`. Give it the
+spectrum as an ``xarray.DataArray`` carrying its wavenumber coordinates; the
+grid is detected and the spectrum is used **as sampled** (no resampling):
 
 .. code-block:: python
 
+   import cwaves
+
+   # xs: cross-spectrum with 1-D coordinates k_rg, k_az (rad/m)
+   params = cwaves.compute_cwaves(xs)                    # 4 x 5, 25-600 m
+   params = cwaves.compute_cwaves(xs, cwave_Nk=8, cwave_Nphi=9)
+   print(params.attrs["grid"], params.attrs["coverage"])  # e.g. cartesian half
+
+Supported inputs
+----------------
+
+.. list-table::
+   :header-rows: 1
+
+   * - grid
+     - coordinates (1-D each, own dimension)
+     - examples
+   * - cartesian, uniform or not
+     - ``k_rg`` (range), ``k_az`` (azimuth), rad/m
+     - SARWave L1B XSP (FFT grid), OCN ``oswCartSpec`` (sinh grid, convert
+       cycles/m to rad/m)
+   * - polar, linear or log ``k``
+     - ``k`` (rad/m), ``phi`` (**radians**, ``k_rg = k cos(phi)``)
+     - OCN ``oswPolSpec`` (convert ``oswPhi`` from degrees), model spectra
+
+Each grid may cover the **half plane** ``k_rg >= 0`` (``phi`` in
+:math:`[-\pi/2, \pi/2]`) or the **full plane** (``k_rg`` symmetric around 0,
+or the full circle). On the full plane the result is the CWAVE parameters of
+the centrally-symmetric part of the spectrum (identical to the half-plane
+result for a Hermitian cross-spectrum) -- see :ref:`theory`.
+
+Any extra dimension (``pol``, ``time``, ``tile``...) is broadcast; a wavenumber
+axis that varies along an extra dimension (one ``k_rg`` per tile) is handled
+slice by slice.
+
+Explicit errors are raised for: an unsupported grid (no ``k_rg``/``k_az`` nor
+``k``/``phi`` coordinates), ``phi`` in degrees, NaN or non-monotonic
+coordinates, a partial plane coverage (e.g. a few negative ``k_rg`` only), or
+a spectrum with zero mass in the wavenumber annulus.
+
+Polar example (ESA OCN WV ``oswPolSpec``):
+
+.. code-block:: python
+
+   import numpy as np
    import xarray as xr
    import cwaves
 
-   # one-sided (k_rg >= 0) cross-spectrum with k_rg / k_az coordinates
-   xs = xr.open_dataset("measurement.nc")["cross_spectra"]
+   with xr.open_dataset("s1a-wv1-ocn-vv.nc") as ds:
+       spec = xr.DataArray(
+           ds["oswPolSpec"].isel(oswAzSize=0, oswRaSize=0).values,  # (phi, k)
+           dims=("phi", "k"),
+           coords={"phi": np.deg2rad(ds["oswPhi"].values), "k": ds["oswK"].values},
+       )
+   params = cwaves.compute_cwaves(spec)   # native 72 x 60 polar grid
 
-   cwave_params = cwaves.compute_cwave_parameters(
-       xs, cwave_wlmax=600, cwave_wlmin=25, cwave_Nk=4, cwave_Nphi=5
-   )
+(:func:`cwaves.client.polar_spectrum` does exactly this.)
 
-   print(cwave_params)  # DataArray, dims (k_gp, phi_hf)
+Complex spectra
+---------------
 
-Input contract
---------------
-
-As in the 2007 paper, the input must be a **one-sided (half)** cross-spectrum :
-
-* **one-sided in range** : :math:`k_{rg} \ge 0` (a full / symmetrized spectrum
-  is rejected with a ``ValueError``),
-* **two-sided in azimuth** : :math:`k_{az}` spans negative and positive,
-* **real modulus** : only :math:`|xs|` is used (the complex phase is discarded),
-* **uniform (regular) wavenumber grid** in both :math:`k_{rg}` and :math:`k_{az}`
-  (the projection uses a constant cell area, exact only for a uniform grid).
-
-See :ref:`theory` and ``repository_specifications.md`` (section 6) for the full
-rationale.
-
-Polar input (no resampling)
----------------------------
-
-A spectrum natively sampled on a polar wavenumber grid (e.g. the ESA OCN WV
-product's ``oswPolSpec`` : log-spaced wavenumber magnitude x uniform angle) can
-be fed **directly** to :func:`cwaves.compute_cwave_parameters_polar`, without
-any resampling to a cartesian grid :
+``part`` selects what is projected (see :ref:`complex-cwave`):
 
 .. code-block:: python
 
-    import numpy as np
-    import xarray as xr
-    import cwaves
-
-    with xr.open_dataset("s1a-wv1-ocn-vv.nc") as ds:
-        spec = ds["oswPolSpec"].isel(oswAzSize=0, oswRaSize=0)  # (phi, k)
-        k = ds["oswK"].values                  # rad/m, strictly increasing
-        phi = np.deg2rad(ds["oswPhi"].values)  # radians, full 2*pi circle
-
-    cwave_params = cwaves.compute_cwave_parameters_polar(
-        spec, k, phi, cwave_wlmax=600, cwave_wlmin=25, cwave_Nk=4, cwave_Nphi=5
-    )
-
-The same ``cwave_*`` parameters as the cartesian path are accepted. See
-:ref:`theory` (direct polar-grid computation) for the quadrature details and
-:ref:`polar-direct-certification` for the agreement with the cartesian path on
-the real S1A WV1 asset.
+   cwaves.compute_cwaves(xs)                    # |xs| on even harmonics (paper)
+   cwaves.compute_cwaves(xs, part="real")       # Re xs on even harmonics
+   cwaves.compute_cwaves(xs, part="imag")       # Im xs on odd harmonics
+   c = cwaves.compute_cwaves(xs, part="complex")  # Re -> even, Im -> odd
+   c.real, c.imag
 
 Parameters
 ----------
 
 - ``cwave_wlmax`` / ``cwave_wlmin`` : maximum / minimum wavelength in meters
-  (default 600 / 25). They set the wavenumber bounds
-  :math:`k_{min}=2\pi/\lambda_{max}`, :math:`k_{max}=2\pi/\lambda_{min}`.
-- ``cwave_Nk`` : number of Gegenbauer (wavenumber) basis functions (default 4).
-- ``cwave_Nphi`` : number of harmonic (angle) basis functions (default 5).
+  (default 600 / 25). They set :math:`k_{min}=2\pi/\lambda_{max}`,
+  :math:`k_{max}=2\pi/\lambda_{min}`.
+- ``cwave_Nk`` : number of Gegenbauer (radial) functions (default 4).
+- ``cwave_Nphi`` : number of harmonic (angular) functions (default 5).
+- ``part`` : ``"modulus"`` (default), ``"real"``, ``"imag"``, ``"complex"``.
 - ``save_cwave_kernel`` : if ``True``, write the kernels to ``cwaves_kernel.nc``.
+
+:func:`cwaves.compute_cwave_parameters` keeps the historical ``xsar_slc``
+signature and calls :func:`cwaves.compute_cwaves`.
 
 Configuration
 -------------
@@ -86,64 +106,56 @@ loaded with :func:`cwaves.load_config` / :func:`cwaves.get_default_config` :
 
    import cwaves
 
-   cfg = cwaves.get_default_config()
-   cwave_block = cfg["cwave"]          # cwave_wlmax, cwave_wlmin, cwave_Nk, ...
-   params = cwaves.compute_cwave_parameters(xs, **cwave_block)
+   cwave_block = cwaves.get_default_config()["cwave"]
+   params = cwaves.compute_cwaves(xs, **cwave_block)
 
 .. _axis-convention-usage:
 
 Axis convention
 ---------------
 
-:math:`k_x` is the range wavenumber (``k_rg``, dimension ``freq_sample``) and
-:math:`k_y` is the azimuth wavenumber (``k_az``, dimension ``freq_line``). The
-major axis of the kernel ellipses is in the **range** direction. See
-:ref:`axis-convention`.
+:math:`k_x` is the range wavenumber (``k_rg``) and :math:`k_y` the azimuth
+wavenumber (``k_az``); polar angles are measured from the range axis
+(``k_rg = k cos(phi)``, ``k_az = k sin(phi)``). See :ref:`axis-convention`.
 
 Command-line interfaces
 -----------------------
 
-``cwaves`` ships three console scripts.
+``cwaves`` : CWAVE of the spectrum stored in a NetCDF file
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-``cwaves-osw`` : CWAVE from a Sentinel-1 product
-++++++++++++++++++++++++++++++++++++++++++++++++
+One input, ``--input-nc``; the schema is detected from the variables of the
+file (never from its name):
 
-Two mutually-exclusive inputs :
+* ``xspectra_{lag}tau_Re/Im`` on ``k_rg``/``k_az`` (e.g. SARWave L1B XSP WV):
+  one parameter set per ``time`` slice (``--lag``, ``--pol``);
+* ``oswPolSpec`` on ``oswK``/``oswPhi`` (e.g. ESA OCN WV): native polar grid.
 
-* ``--input-nc-l1b`` : SARWave L1B XSP cross-spectrum product (primary, no
-  ``s1_int2.xml``). One CWAVE parameter set per time slice.
-* ``--input-nc-osw`` : ESA OCN WV Sentinel-1 measurement file (the polar
-  ``oswPolSpec`` is resampled to a cartesian cross-spectrum via
-  ``--n-range`` / ``--n-azimuth``, or computed **directly on the native polar
-  grid** with ``--polar-direct``, no resampling).
+Tiled products whose spectra live in NetCDF groups (IW ``intraburst`` /
+``interburst``) are rejected with a pointer to the IW map script below.
 
 .. code-block:: bash
 
-   cwaves-osw --input-nc-l1b l1b-s1b-iw2-xsp.nc --lag 2 --pol 0
-   cwaves-osw --input-nc-osw s1d-wv1-ocn-vv.nc --output-nc cwave.nc
-   # same OCN input, computed directly on the polar grid (no resampling)
-   cwaves-osw --input-nc-osw s1d-wv1-ocn-vv.nc --polar-direct --output-nc cwave.nc
+   cwaves --input-nc s1a_wv1_xsp.nc --lag 2 --pol 0 --output-nc cwave.nc
+   cwaves --input-nc s1a-wv1-ocn-vv.nc --cwave-nk 8 --cwave-nphi 9
+   # complex CWAVE (written as cwave_params_re / cwave_params_im)
+   cwaves --input-nc s1a_wv1_xsp.nc --part complex --output-nc cwave_c.nc
 
 ``cwaves-kernels`` : render the kernel basis
 +++++++++++++++++++++++++++++++++++++++++++++
 
-Render the orthonormal kernel basis in the (:math:`k_x`, :math:`k_y`)
-wavenumber domain (elliptic domain :math:`A` masked outside), as a grid of
-:math:`N_k` x :math:`N_\varphi` panels :
-
 .. code-block:: bash
 
-   # full basis
-   cwaves-kernels --output-png kernels.png
-   # a single kernel
+   cwaves-kernels --output-png kernels.png              # full basis
    cwaves-kernels --k-gp 1 --phi-hf 1 --output-png k1_phi1.png
 
 IW subswath map (``python -m cwaves.scripts.iw_cwaves_map``)
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-Compute CWAVE on the IW subswaths (``iw1``/``iw2``/``iw3``) of a Sentinel-1 L2
-product (``.SAFE``) and render a single georeferenced map. Both the OCN IW
-measurement and the SARWAVE L1B XSP families are auto-detected :
+Compute CWAVE tile by tile on the IW subswaths (``iw1``/``iw2``/``iw3``) of a
+Sentinel-1 ``.SAFE`` (OCN IW ``oswCartSpec`` on its native sinh grid, or
+SARWAVE L1B IW XSP) and render a georeferenced map; the output size follows
+``--cwave-nk`` x ``--cwave-nphi``:
 
 .. code-block:: bash
 
