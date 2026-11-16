@@ -133,8 +133,8 @@ def ocn_tile_spectrum(ds: xr.Dataset, iaz: int, ira: int, lag: int) -> xr.DataAr
     """Complex cross-spectrum of one OCN osw tile on its native sinh grid.
 
     The ``oswKx`` / ``oswKy`` wavenumbers are physical rad/m (a colocated L1B
-    XSP check rejects cycles/m, issue #12) and are used as is; grid lines with NaN wavenumbers (trailing bins of some interburst
-    tiles) are dropped. The result carries the cartesian ``k_rg`` / ``k_az``
+    XSP check rejects cycles/m, issue #12) and are used as is; grid lines with NaN
+    wavenumbers (trailing bins of some interburst tiles) are dropped. The result carries the cartesian ``k_rg`` / ``k_az``
     coordinates expected by :func:`cwaves.compute_cwaves`.
 
     Args:
