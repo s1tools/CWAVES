@@ -493,6 +493,20 @@ def _cell_area_of(
     return _cell_area(probe)
 
 
+def _refine_2x(k: np.ndarray) -> np.ndarray:
+    """Refine a 1-D (uniform or not) axis by inserting the mid-points.
+
+    The refined axis halves every cell of the original one, so it is a true
+    2x refinement of a non-uniform (sinh) grid too (a ``linspace`` over the
+    same extent would be *coarser* than a sinh grid near its centre).
+    """
+    k = np.asarray(k, dtype=float)
+    out = np.empty(2 * k.size - 1)
+    out[0::2] = k
+    out[1::2] = 0.5 * (k[:-1] + k[1:])
+    return out
+
+
 def _kernel_domain_mask(
     k_rg: xr.DataArray, k_az: xr.DataArray, kmin: float, kmax: float
 ) -> xr.DataArray:
@@ -1687,8 +1701,8 @@ def _idempotence_scaling(
 
     k_rg_1d = np.asarray(k_rg, dtype=float)
     k_az_1d = np.asarray(k_az, dtype=float)
-    k_rg_2x = np.linspace(k_rg_1d[0], k_rg_1d[-1], 2 * len(k_rg_1d))
-    k_az_2x = np.linspace(k_az_1d[0], k_az_1d[-1], 2 * len(k_az_1d))
+    k_rg_2x = _refine_2x(k_rg_1d)
+    k_az_2x = _refine_2x(k_az_1d)
     f_2d = f.transpose("freq_line", "freq_sample").values
     interp = RegularGridInterpolator(
         (k_az_1d, k_rg_1d),
@@ -1736,13 +1750,15 @@ def _idempotence_scaling(
     if cols.size == 0 or rows.size == 0:
         truncated = True
     else:
-        dk_rg = float(np.mean(np.diff(k_rg_1d))) if len(k_rg_1d) > 1 else 0.0
-        dk_az = float(np.mean(np.diff(k_az_1d))) if len(k_az_1d) > 1 else 0.0
         # one-cell tolerance : on a range-complete grid the apex column
         # (k_rg = kmax) is empty unless the grid carries a k_az = 0 row, so
-        # the mask extent sits within ~1 cell of the analytic domain extent
-        k_rg_dom_max = float(k_rg_1d[int(np.max(cols))])
-        k_az_dom_max = float(abs(k_az_1d[int(np.max(rows))]))
+        # the mask extent sits within ~1 cell of the analytic domain extent;
+        # the local cell width is used (non-uniform sinh grids)
+        icol, irow = int(np.max(cols)), int(np.max(rows))
+        dk_rg = float(np.abs(np.gradient(k_rg_1d))[icol]) if len(k_rg_1d) > 1 else 0.0
+        dk_az = float(np.abs(np.gradient(k_az_1d))[irow]) if len(k_az_1d) > 1 else 0.0
+        k_rg_dom_max = float(k_rg_1d[icol])
+        k_az_dom_max = float(abs(k_az_1d[irow]))
         truncated = bool(
             k_rg_dom_max < kmax - 1.5 * dk_rg or k_az_dom_max < az_max - 1.5 * dk_az
         )
@@ -2783,14 +2799,8 @@ def _sweep_product(
     # the product's own wavenumber range (spectrum-independent).
     idemp_worst = max(results, key=lambda r: r["idemp_max_abs"])
     idemp_scale = _idempotence_scaling(f, k_rg, k_az, kmin, kmax, domain)
-    k_rg_2x = xr.DataArray(
-        np.linspace(float(k_rg_1d[0]), float(k_rg_1d[-1]), 2 * len(k_rg_1d)),
-        dims="freq_sample",
-    )
-    k_az_2x = xr.DataArray(
-        np.linspace(float(k_az_1d[0]), float(k_az_1d[-1]), 2 * len(k_az_1d)),
-        dims="freq_line",
-    )
+    k_rg_2x = xr.DataArray(_refine_2x(k_rg_1d), dims="freq_sample")
+    k_az_2x = xr.DataArray(_refine_2x(k_az_1d), dims="freq_line")
     gram_diag, gram_off = _gram_diagnostic(k_rg_2x, k_az_2x, kmin, kmax, *GRAM_BASIS)
     logger.info(
         "idempotence scaling %dx%d: E1x = %.3e, E2x = %.3e, ratio = %.3f "
@@ -2839,7 +2849,7 @@ def _sweep_product(
         "idemp_worst": idemp_worst,
         "idemp_scale": idemp_scale,
         # 2x the (masked / dropna'd) density grid of the sweep
-        "gram_grid": (2 * len(k_az_1d), 2 * len(k_rg_1d)),
+        "gram_grid": (2 * len(k_az_1d) - 1, 2 * len(k_rg_1d) - 1),
         "gram_diag": gram_diag,
         "gram_off": gram_off,
         # max relative difference with cwaves.compute_cwaves (reference basis)

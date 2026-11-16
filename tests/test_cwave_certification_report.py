@@ -1530,3 +1530,13 @@ def test_report_coefficients_equal_library():
     xs = xs.assign_coords(cell_area=_cell_area(xs))
     f = _normalized_density(xs, KMIN, KMAX)
     assert _library_consistency(xs, f, KMIN, KMAX) < 1e-12
+
+
+def test_refine_2x_halves_every_cell():
+    from cwaves.scripts.cwave_certification_report import _refine_2x
+
+    k = 32.0 * np.sinh(np.arange(10) / 32.0)  # non-uniform (sinh) axis
+    r = _refine_2x(k)
+    assert r.size == 2 * k.size - 1
+    np.testing.assert_allclose(r[0::2], k)
+    np.testing.assert_allclose(np.diff(r)[0::2], np.diff(k) / 2)
