@@ -405,9 +405,13 @@ OCN **IW** groups store physical axes (no area size) in **rad/m**. Checked
 colocated L1B IW XSP generated with xsar_slc (tiles 20 km, < 10 km apart):
 log-amplitude correlation 0.68 with the axes as rad/m vs -0.17 as cycles/m;
 per-axis best scale range 1.13 (IQR 0.90-1.59), azimuth 0.71 (IQR 0.67-0.75).
-The former x 2 pi of `iw_cwaves_map` was wrong and is removed; the azimuth
-factor 0.71 is unexplained (azimuth cut-off / processing differences or a real
-offset; open point in issue #12).
+The former x 2 pi of `iw_cwaves_map` was wrong and is removed. Same result
+with the A21 tile configuration (17.5 km / 3.5 km periodograms) and on two
+more acquisitions (S1A 2026-02-02, S1C 2026-02-28 HH: rad/m 0.67 / 0.71 vs
+cycles/m -0.13 / 0.36). The per-axis scale of the log-shape fit is not stable
+(azimuth 0.42 / 0.71 / 1.00, range 2.06 / 1.13 / 1.34) and the azimuth peak
+positions agree: it reflects processing differences (azimuth cut-off, noise
+floor), not a calibration error (issue #12).
 
 ## 9. Complex extension: odd harmonics (2026-11-16)
 
@@ -478,6 +482,13 @@ The user-facing version is `docs/limits.rst`. Summary, with the evidence
    ~16 x 16 on (5 % noise: 8 x 9 ratio 0.92, 24 x 24 ratio 0.99). Only
    `part="modulus"` parameters are reconstructed by MEM; `method="linear"`
    handles all parts. Evaluation scripts: `tmp_data/cwave_s6/`.
+   Training-free alternatives evaluated 2026-11-17 (same 246 cases, exact
+   parameters, `tmp_data/cwave_s12/`), none adopted: power family
+   `max(l.K, 0)^p` (p = 1, 2, 4) always worse; MEM with a parametric prior
+   (1-3 Gaussian partitions fitted to the parameters) worse; priors eta^2,
+   k^-2, k^-4 < 1 % change; Renyi `(-(t0 + l.K))^-r` r = 4 better in 76 % of
+   the cases but by 0.4 % in median, worse on OCN polar (+7 % median, up to
+   +21 %), r = 2 up to x2 (boundary spikes). Flat-prior MEM kept.
 8. **Memory**: `compute_kernel` materialises `Nk * Nphi` kernels on the whole
    grid (1301^2 grid x 48 x 40 basis ~ 26 GB); product grids (~1e4 samples)
    are far from this limit.

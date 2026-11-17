@@ -119,6 +119,36 @@ the gain then shrinks with the basis size and vanishes from about 16 x 16 on
 (5 % noise: error ratio MEM / linear 0.92 at 8 x 9, 0.99 at 24 x 24); use few
 coefficients or ``method="linear"`` there.
 
+**Alternatives evaluated and not adopted** (same protocol, same 246 cases,
+all reproducing the parameters exactly, no training):
+
+.. list-table::
+   :header-rows: 1
+   :align: center
+
+   * - method
+     - result vs. maximum entropy (flat prior)
+   * - power family :math:`\hat f = \max(\lambda\cdot K, 0)^p` (:math:`p=1`:
+       minimum-norm positive; :math:`p = 2, 4`)
+     - always worse; closer to MEM as :math:`p` grows (MEM is the limit
+       :math:`p \to \infty`)
+   * - MEM with a parametric prior (1-3 symmetrised Gaussian partitions fitted
+       to the parameters)
+     - worse (e.g. OCN polar 16 x 16: 0.10-0.13 vs 0.05)
+   * - MEM with a prior outside the kernel span (:math:`\eta^2`,
+       :math:`k^{-2}`, :math:`k^{-4}`)
+     - < 1 % change (a prior inside the span gives the MEM result exactly)
+   * - Rényi / Burg family :math:`\hat f = (-(\theta_0 + \lambda\cdot
+       K))^{-r}` (peakier than MEM, which is :math:`r \to \infty`; domain
+       mass taken from the MEM solution)
+     - :math:`r = 4`: better in 76 % of the cases but by 0.4 % in median
+       (up to -15 % on L1B XSP and WW3 at 8 x 9), worse on OCN polar spectra
+       (+7 % median, up to +21 %); :math:`r = 2`: up to x2 on OCN (spikes
+       at the domain boundary, where all kernels vanish)
+
+No training-free method was found that is uniformly better than the flat-prior
+maximum entropy, which is therefore kept as the default.
+
 What the maximum-entropy step adds is a prior (positivity, maximum entropy),
 not information: details orthogonal to the basis are plausible, not measured.
 Learned priors (optimal transport on a library of spectra, conditional
@@ -162,8 +192,11 @@ Implementation choices
 * **OCN IW axes in rad/m**: the per-tile ``oswKx`` / ``oswKy`` of the OCN IW
   ``intraburst`` / ``interburst`` groups are used as is (no :math:`2\pi`
   factor). Against a colocated L1B IW XSP (175 tiles) the log-amplitude
-  correlation is 0.68 with rad/m and -0.17 with cycles/m. The best azimuth
-  scale (0.71) is not yet explained (issue #12).
+  correlation is 0.68 with rad/m and -0.17 with cycles/m, confirmed on two
+  more acquisitions (0.67 / -0.13 and 0.71 / 0.36). The best per-axis scale
+  of a log-shape fit varies between acquisitions (azimuth 0.42, 0.71, 1.00):
+  it reflects processing differences (azimuth cut-off, noise floor), not a
+  calibration error, and the spectral peaks agree in azimuth (issue #12).
 * **Modulus by default** (``part="modulus"``) as in the paper; the complex
   extension is opt-in.
 * **Wavelength bounds** 25-600 m and basis 4 x 5 by default
