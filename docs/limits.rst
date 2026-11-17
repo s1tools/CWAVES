@@ -149,6 +149,21 @@ Implementation choices
   changes the parameters of grids without a :math:`k_{rg} = 0` column (SARWave
   L1B XSP) by ~2.3 % with respect to the previous version, and makes the
   half-plane result equal to the full-plane (symmetrized) one.
+* **OCN WV spectra on their native sinh grid**: the cartesian
+  ``oswCartSpecRe/Im`` of an OCN WV product is read by
+  :func:`cwaves.client.ocn_cartesian_spectrum` with ``k_rg =
+  oswKx / oswGroundRngSize`` and ``k_az = oswKy / oswAziSize`` (rad/m; the
+  central step equals :math:`2\pi/(1024 \times` ground pixel)) and integrated
+  with exact cell areas. Decompressing it to a linear grid was evaluated and
+  removed: the previous decoder had four calibration defects (growth 1/30.1
+  instead of 1/32, wrong incidence angle, biased azimuth scale, 256-point grid
+  cutting the domain) and, once corrected, it reproduces the native-grid
+  parameters to 0.1-0.7 %, so it brings nothing (issue #12).
+* **OCN IW axes in rad/m**: the per-tile ``oswKx`` / ``oswKy`` of the OCN IW
+  ``intraburst`` / ``interburst`` groups are used as is (no :math:`2\pi`
+  factor). Against a colocated L1B IW XSP (175 tiles) the log-amplitude
+  correlation is 0.68 with rad/m and -0.17 with cycles/m. The best azimuth
+  scale (0.71) is not yet explained (issue #12).
 * **Modulus by default** (``part="modulus"``) as in the paper; the complex
   extension is opt-in.
 * **Wavelength bounds** 25-600 m and basis 4 x 5 by default
