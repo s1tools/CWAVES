@@ -86,8 +86,8 @@ of the spectrum, transported to the rectangle** :math:`[-1,1]\times[0,\pi]`.
 continuum, and the basis is **complete**: with enough coefficients any
 (square-integrable) spectrum on the half domain is represented. This is the
 precise sense in which the library is an *exact* implementation of the
-Gradshteyn & Ryzhik construction. The angular part of the orthonormality is
-also formally proven in Lean 4 (:ref:`proofs`).
+Gradshteyn & Ryzhik construction. The 1-D orthonormality of the angular and
+radial factors is also formally proven in Lean 4 (:ref:`proofs`).
 
 The kernel basis
 ----------------

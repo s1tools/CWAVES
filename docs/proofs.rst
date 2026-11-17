@@ -3,11 +3,13 @@
 Formal verification (Lean)
 ==========================
 
-The angular part of the CWAVE kernel basis is **formally verified in the Lean
-4 theorem prover** (Mathlib). The source lives in the :file:`lean/` directory
-of the repository; the build is reproducible with ``lake build`` (Lean
-toolchain ``v4.35.0``, Mathlib ``v4.35.0``) and currently compiles with
-**0 errors, 0 warnings, no ``sorry`` and no axioms**.
+The angular and radial factors of the CWAVE kernel basis are **formally
+verified in the Lean 4 theorem prover** (Mathlib). The source lives in the
+:file:`lean/` directory of the repository; the build is reproducible with
+``lake build`` (Lean toolchain ``v4.35.0``, Mathlib ``v4.35.0``) and currently
+compiles with **0 errors, 0 warnings and no ``sorry``**; the theorems depend
+only on the three standard axioms of Lean/Mathlib (``propext``,
+``Classical.choice``, ``Quot.sound``, checked with ``#print axioms``).
 
 What is proven
 --------------
@@ -25,14 +27,33 @@ kernel, defined in ``CWave.Definitions`` exactly as the Python
 This is the statement ``CWave.angular_orthonormal`` in
 ``CWave.Harmonics``.
 
+The radial functions :math:`G_n(x)\sqrt{1-x^2}` (paper B9, with
+:math:`G_n = \sqrt{(n+3/2)/((n+1)(n+2))}\,C_n^{(3/2)}`, defined in
+``CWave.Definitions`` as the Python :func:`cwaves.gegenbauer_polynoms`) are
+**orthonormal on** :math:`[-1, 1]` :
+
+.. math::
+
+   \int_{-1}^{1} G_n(x)\sqrt{1-x^2}\; G_m(x)\sqrt{1-x^2}\,\mathrm{d}x
+   = 1_{n = m} \qquad (n, m \ge 0)
+
+This is ``CWave.radial_orthonormal_sqrt`` in ``CWave.Radial`` (with
+``gegenbauer_orthogonal`` and ``gegenbauer_norm``:
+:math:`\int (1-x^2)\,(C_n^{(3/2)})^2 = 2(n+1)(n+2)/(2n+3)`, Gradshteyn &
+Ryzhik 7.313 with :math:`\lambda = 3/2`). It is the check of the
+:math:`\sqrt{\cdot}` of the coefficient (issue #4): without it the
+functions are not normalised.
+
 Scope
 -----
 
-The verification covers the **angular (harmonic) factor only**. The radial
-factor — the orthonormal Gegenbauer polynomials :math:`C_n^{(3/2)}` and the
-Jacobian :math:`\eta` over the elliptic domain :math:`A` (paper equations
-B1-B13) — is **not** part of the formal statement; the full 2D orthonormality
-of the kernel basis on :math:`A` is therefore not yet machine-checked.
+Both 1-D factors of the kernels are verified. The **change of variables**
+from :math:`(k_{rg}, k_{az})` to the elliptic coordinates
+:math:`(\alpha_k, \alpha_\varphi)` over the domain :math:`A` (paper
+B1-B13, :math:`\eta^2 J = 1`) is **not** formalised: the 2-D orthonormality
+on :math:`A` follows from the two 1-D results and this Jacobian identity,
+which is checked numerically (to :math:`10^{-16}`) in the Python test suite,
+not in Lean.
 
 Structure of the proof
 ----------------------
@@ -77,6 +98,36 @@ with :math:`n = 1` / even / odd, with the :math:`m = n` vs :math:`m \neq n`
 sub-cases), using the normalization :math:`\sqrt{2/\pi} \cdot \sqrt{2/\pi} =
 2/\pi` to turn each diagonal :math:`\pi/2` into :math:`1`.
 
+Structure of the radial proof
+-----------------------------
+
+The proof is algebraic, on real polynomials (``P n : ℝ[X]`` follows the
+three-term recurrence of ``Gegenbauer``; ``gegenbauer_eq_eval`` links the
+two):
+
+1. **Derivative relations** (joint induction on :math:`n`):
+   :math:`(1-x^2) C_{n+1}' = -(n+1)\,x\,C_{n+1} + (n+3)\,C_n` and
+   :math:`(1-x^2) C_n' = (n+3)\,x\,C_n - (n+1)\,C_{n+1}`.
+2. **Sturm–Liouville form**:
+   :math:`\big((1-x^2)^2 C_n'\big)' = -n(n+3)\,(1-x^2)\,C_n`.
+3. **Orthogonality**: :math:`(\lambda_m-\lambda_n)(1-x^2)C_nC_m` is the
+   derivative of :math:`(1-x^2)^2 (C_n'C_m - C_m'C_n)`, which vanishes at
+   :math:`\pm 1`; the fundamental theorem of calculus gives 0 for
+   :math:`n \ne m` (:math:`\lambda_n = n(n+3)` is strictly increasing).
+4. **Norms**: multiplying the recurrence by :math:`(1-x^2)C_{n+2}` and by
+   :math:`(1-x^2)C_{n+1}` and using the orthogonality gives
+   :math:`(n+2)\,h_{n+2} = \frac{(2n+5)(n+4)}{2n+7}\,h_{n+1}`, with
+   :math:`h_0 = 4/3`, :math:`h_1 = 12/5`.
+
+Executable cross-check
+----------------------
+
+``CWave.Test`` mirrors the recurrence on exact rationals and checks at
+compile time (``#guard``) the values :math:`C_n^{(3/2)}(1) = (n+1)(n+2)/2`,
+and the exact weighted Gram matrix :math:`\int (1-x^2) C_n C_m` for
+:math:`n, m < 8` (rational polynomial arithmetic); ``#eval`` prints its
+diagonal :math:`[4/3, 12/5, 24/7, 40/9, \dots]`.
+
 Reproducing the verification
 ----------------------------
 
@@ -86,9 +137,13 @@ Reproducing the verification
    lake build
 
 The build is incremental (the Mathlib precompile cache is stored in
-:file:`.lake/`, which is gitignored). The two source files are :
+:file:`.lake/`, which is gitignored; fetch it with ``lake exe cache get``).
+The source files are :
 
 * :file:`lean/CWave/Definitions.lean` — the kernel factors (Gegenbauer,
   :math:`G`, :math:`F_m`, :math:`\eta`) mirroring the Python implementation;
 * :file:`lean/CWave/Harmonics.lean` — the lemmas and the
-  ``angular_orthonormal`` theorem above.
+  ``angular_orthonormal`` theorem above;
+* :file:`lean/CWave/Radial.lean` — the Gegenbauer recurrence, derivative
+  relations, orthogonality, norms and ``radial_orthonormal_sqrt``;
+* :file:`lean/CWave/Test.lean` — the ``#guard`` / ``#eval`` cross-checks.
