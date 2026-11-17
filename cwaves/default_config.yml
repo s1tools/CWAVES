@@ -1,0 +1,38 @@
+# Default configuration for the CWAVE parameters computation.
+#
+# Reference : Schulz-Stellenfleth, Konig, Lehner, J. Geophys. Res., 112, C03019,
+# 2007. doi:10.1029/2006JC003970 (see repository_specifications.md).
+#
+# The keys of the ``cwave`` block map directly to the parameters of
+# ``cwaves.compute_cwave_parameters``, so the block can be passed as kwargs :
+#
+#     import yaml
+#     from cwaves import compute_cwave_parameters
+#     cfg = yaml.safe_load(open("cwaves/default_config.yml"))["cwave"]
+#     cwave_params = compute_cwave_parameters(xs, **cfg)
+#
+# The values below are the library defaults, consistent with the xsar_slc
+# production settings.
+
+cwave:
+  # maximum wavelength [m]. Used as kmin = 2*pi/cwave_wlmax.
+  cwave_wlmax: 600
+  # minimum wavelength [m]. Used as kmax = 2*pi/cwave_wlmin.
+  cwave_wlmin: 25
+  # number of Gegenbauer (wavenumber) basis functions.
+  cwave_Nk: 4
+  # number of harmonic (angle) basis functions (odd numbers are kept).
+  cwave_Nphi: 5
+  # save the CWAVE kernel on disk in the working directory.
+  save_cwave_kernel: false
+
+# Informational only (not consumed by compute_cwave_parameters) : the bunching
+# parameter and the wavenumber bounds actually used in the kernel.
+metadata:
+  # bunching parameter of the elliptic wavenumber domain A (paper B4).
+  # Hard-coded to 2 in compute_kernel ; documented here for reference.
+  gamma: 2
+  # resulting wavenumber bounds [rad/m] for the defaults above :
+  #   kmin = 2*pi/600 ~ 0.010472 , kmax = 2*pi/25 ~ 0.251327
+  kmin: 0.010472
+  kmax: 0.251327
